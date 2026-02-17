@@ -11,12 +11,14 @@ import json
 import re
 import os
 import sys
+import urllib.error
 import urllib.request
 import urllib.parse
 from urllib.parse import urlparse, parse_qs
 
 STOCK_ANALYST_PATH = os.path.expanduser("~/projects/public/stock-analyst")
 LEGACY_STOCK_ANALYST_PATH = os.path.join(os.path.dirname(__file__), "stock-analyst")
+FASTAPI_UPSTREAM = os.getenv("FASTAPI_UPSTREAM", "http://127.0.0.1:8000").rstrip("/")
 
 for p in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
     if os.path.isdir(p) and p not in sys.path:
@@ -30,12 +32,57 @@ except Exception:
 
 class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     SEC_TICKERS_CACHE = None
+    FASTAPI_PROXY_PATH_PREFIXES = ("/api/", "/docs", "/openapi.json")
+    FASTAPI_PROXY_EXACT_PATHS = {"/health"}
+
+    def should_proxy_to_fastapi(self, path):
+        if path in self.FASTAPI_PROXY_EXACT_PATHS:
+            return True
+        return any(path.startswith(prefix) for prefix in self.FASTAPI_PROXY_PATH_PREFIXES)
+
+    def proxy_to_fastapi(self):
+        target_url = f"{FASTAPI_UPSTREAM}{self.path}"
+        payload = None
+        if self.command in {"POST", "PUT", "PATCH"}:
+            content_length = int(self.headers.get("Content-Length", "0") or 0)
+            payload = self.rfile.read(content_length) if content_length > 0 else b""
+
+        headers = {}
+        for name, value in self.headers.items():
+            if name.lower() in {"host", "connection", "content-length", "accept-encoding"}:
+                continue
+            headers[name] = value
+
+        headers["X-Forwarded-For"] = self.client_address[0]
+        headers["X-Forwarded-Proto"] = "https"
+        headers["X-Forwarded-Host"] = self.headers.get("Host", "api.istockpick.ai")
+
+        request = urllib.request.Request(target_url, data=payload, headers=headers, method=self.command)
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                response_body = response.read()
+                self.send_response(response.status)
+                self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
+                self.send_header("Content-Length", str(len(response_body)))
+                self.end_headers()
+                self.wfile.write(response_body)
+        except urllib.error.HTTPError as err:
+            error_body = err.read()
+            self.send_response(err.code)
+            self.send_header("Content-Type", err.headers.get("Content-Type", "application/json"))
+            self.send_header("Content-Length", str(len(error_body)))
+            self.end_headers()
+            self.wfile.write(error_body)
+        except Exception:
+            self.send_json(502, {"error": "FastAPI upstream is unavailable."})
 
     def do_GET(self):
         parsed_path = urlparse(self.path)
         query = parse_qs(parsed_path.query)
 
-        if parsed_path.path == '/':
+        if self.should_proxy_to_fastapi(parsed_path.path):
+            self.proxy_to_fastapi()
+        elif parsed_path.path == '/':
             self.serve_construction_page()
         elif parsed_path.path == '/health':
             self.serve_health_check()
@@ -47,8 +94,19 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         elif parsed_path.path == '/analyze':
             lookup_value = query.get('q', [''])[0]
             self.serve_stock_analysis(lookup_value)
+        elif parsed_path.path == '/SKILL.md':
+            self.serve_skill_markdown()
         else:
             self.serve_404()
+
+    def do_POST(self):
+        parsed_path = urlparse(self.path)
+
+        if self.should_proxy_to_fastapi(parsed_path.path):
+            self.proxy_to_fastapi()
+            return
+
+        self.send_json(404, {"error": "Unknown endpoint."})
     
     def serve_construction_page(self):
         """Serve the in construction page"""
@@ -384,6 +442,24 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 </html>'''
         
         self.wfile.write(html.encode())
+
+    def serve_skill_markdown(self):
+        candidates = [
+            os.path.expanduser('~/projects/public/stock-analyst/SKILL.md'),
+            os.path.join(os.path.dirname(__file__), 'SKILL.md'),
+            os.path.join(os.path.dirname(__file__), 'stock-analyst', 'SKILL.md'),
+        ]
+
+        for skill_path in candidates:
+            if os.path.isfile(skill_path):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/markdown; charset=utf-8')
+                self.end_headers()
+                with open(skill_path, 'r', encoding='utf-8') as f:
+                    self.wfile.write(f.read().encode('utf-8'))
+                return
+
+        self.send_json(404, {'error': 'SKILL.md not found'})
 
     def serve_stock_lookup(self, raw_query):
         """Lookup ticker/company and verify it maps to a public stock."""
