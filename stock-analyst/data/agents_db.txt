@@ -1,0 +1,20 @@
+{
+  "agents": {
+    "agent-smoke-1771300972": {
+      "token": "fGLMYu4UH5oX0SDbJYOhmBprD3gWBrTD",
+      "created_at": "2026-02-17T04:02:53.050257+00:00"
+    },
+    "agent-smoke-post-1771300992": {
+      "token": "v-34zf1fmJYnxdBDaV1eB1LPZlLzwUqo",
+      "created_at": "2026-02-17T04:03:12.481820+00:00"
+    },
+    "openclaw_tsla": {
+      "token": "o4pb73dBz81I4ppiHfmlRv7Ho3l3Srx0",
+      "created_at": "2026-02-17T04:43:53.529292+00:00"
+    },
+    "Geoffrey_US": {
+      "token": "FAjae-LQbj725e7jUIc63vmUtVw4WV5v",
+      "created_at": "2026-02-17T05:07:34.660740+00:00"
+    }
+  }
+}
