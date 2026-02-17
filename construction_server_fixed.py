@@ -11,23 +11,35 @@ import json
 import re
 import os
 import sys
+import subprocess
 import urllib.error
 import urllib.request
 import urllib.parse
 from urllib.parse import urlparse, parse_qs
 
-STOCK_ANALYST_PATH = os.path.expanduser("~/projects/public/stock-analyst")
-LEGACY_STOCK_ANALYST_PATH = os.path.join(os.path.dirname(__file__), "stock-analyst")
+DEFAULT_STOCK_ANALYST_PATH = "/Users/richliu/projects/public/stock-analyst"
+STOCK_ANALYST_PATH = os.path.realpath(
+    os.environ.get("STOCK_ANALYST_PATH", DEFAULT_STOCK_ANALYST_PATH)
+)
+LEGACY_STOCK_ANALYST_PATH = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "stock-analyst")
+)
 FASTAPI_UPSTREAM = os.getenv("FASTAPI_UPSTREAM", "http://127.0.0.1:8000").rstrip("/")
+ANALYSIS_RUNTIME_PYTHON = os.getenv(
+    "ANALYSIS_RUNTIME_PYTHON",
+    "/tmp/stock-analyst-venv/bin/python3",
+)
 
 for p in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
     if os.path.isdir(p) and p not in sys.path:
-        sys.path.append(p)
+        sys.path.insert(0, p)
 
 try:
     from stock_analyst.web_analyzer import generate_full_analysis
-except Exception:
+    ANALYSIS_IMPORT_ERROR = None
+except Exception as exc:
     generate_full_analysis = None
+    ANALYSIS_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 
 class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
@@ -496,14 +508,47 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 return
 
             if generate_full_analysis is None:
-                self.send_json(500, {"error": "stock_analyst analysis functions are unavailable."})
-                return
+                try:
+                    analysis = self.generate_full_analysis_subprocess(query)
+                except Exception as exc:
+                    self.send_json(500, {
+                        "error": "stock_analyst analysis functions are unavailable.",
+                        "import_error": ANALYSIS_IMPORT_ERROR,
+                        "fallback_error": f"{type(exc).__name__}: {exc}",
+                        "search_paths": [STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH],
+                        "analysis_runtime_python": ANALYSIS_RUNTIME_PYTHON,
+                    })
+                    return
+            else:
+                analysis = generate_full_analysis(query)
 
-            analysis = generate_full_analysis(query)
             analysis["company"] = public_stock.get("name", analysis.get("company", query))
             self.send_json(200, analysis)
         except Exception:
             self.send_json(502, {"error": "Unable to generate analysis right now. Please try again."})
+
+    def generate_full_analysis_subprocess(self, symbol):
+        script = (
+            "import json, sys\n"
+            f"sys.path.insert(0, {STOCK_ANALYST_PATH!r})\n"
+            "from stock_analyst.web_analyzer import generate_full_analysis\n"
+            "result = generate_full_analysis(sys.argv[1])\n"
+            "print(json.dumps(result))\n"
+        )
+        result = subprocess.run(
+            [ANALYSIS_RUNTIME_PYTHON, "-c", script, symbol],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(details or "analysis subprocess failed")
+        stdout = (result.stdout or "").strip()
+        if not stdout:
+            raise RuntimeError("analysis subprocess returned empty output")
+        return json.loads(stdout.splitlines()[-1])
 
     def lookup_public_stock(self, query):
         """Return a dict with symbol/name when query resolves to a listed equity."""
