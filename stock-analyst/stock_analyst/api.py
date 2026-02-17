@@ -12,6 +12,10 @@ from pydantic import BaseModel, Field
 from .web_analyzer import generate_full_analysis
 
 _DB_LOCK = threading.Lock()
+_MAX_STOCK_INPUT_LEN = 120
+_MAX_AGENT_NAME_LEN = 64
+_MAX_AGENT_TOKEN_LEN = 256
+_AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,63}$")
 
 
 class RecommendationRequest(BaseModel):
@@ -30,7 +34,7 @@ def _looks_like_ticker(value: str) -> bool:
 
 def _resolve_symbol(stock: str) -> Optional[str]:
     candidate = stock.strip()
-    if not candidate:
+    if not candidate or len(candidate) > _MAX_STOCK_INPUT_LEN:
         return None
 
     if _looks_like_ticker(candidate):
@@ -132,6 +136,16 @@ def _register_agent(name: str) -> dict:
     cleaned_name = name.strip()
     if not cleaned_name:
         raise HTTPException(status_code=400, detail="Agent name cannot be empty")
+    if len(cleaned_name) > _MAX_AGENT_NAME_LEN:
+        raise HTTPException(status_code=400, detail="Agent name is too long")
+    if not _AGENT_NAME_PATTERN.fullmatch(cleaned_name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Agent name must start with a letter/number and use only "
+                "letters, numbers, '.', '_', or '-'."
+            ),
+        )
 
     with _DB_LOCK:
         agents = _load_agents()
@@ -154,6 +168,10 @@ def _validate_agent(name: str, token: str) -> None:
     cleaned_token = token.strip()
     if not cleaned_name or not cleaned_token:
         raise HTTPException(status_code=401, detail="Agent name and token are required")
+    if len(cleaned_name) > _MAX_AGENT_NAME_LEN or len(cleaned_token) > _MAX_AGENT_TOKEN_LEN:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not _AGENT_NAME_PATTERN.fullmatch(cleaned_name):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     with _DB_LOCK:
         agents = _load_agents()
@@ -168,6 +186,12 @@ def _validate_agent(name: str, token: str) -> None:
 
 
 def _build_recommendation_response(stock: str) -> dict:
+    stock = stock.strip()
+    if not stock:
+        raise HTTPException(status_code=400, detail="Stock input is required")
+    if len(stock) > _MAX_STOCK_INPUT_LEN:
+        raise HTTPException(status_code=400, detail="Stock input is too long")
+
     resolved_symbol = _resolve_symbol(stock)
     if not resolved_symbol:
         raise HTTPException(
@@ -183,7 +207,7 @@ def _build_recommendation_response(stock: str) -> dict:
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to generate recommendation for {resolved_symbol}: {exc}",
+            detail=f"Failed to generate recommendation for {resolved_symbol}",
         ) from exc
 
     if analysis.get("ai_recommendation") is None:

@@ -12,19 +12,21 @@ import re
 import os
 import sys
 import subprocess
+import threading
+import secrets
+import importlib.util
 import urllib.error
 import urllib.request
 import urllib.parse
 from urllib.parse import urlparse, parse_qs
 
-DEFAULT_STOCK_ANALYST_PATH = "/Users/richliu/projects/public/stock-analyst"
+DEFAULT_STOCK_ANALYST_PATH = "/Users/richliu/projects/private/istockpick/stock-analyst"
 STOCK_ANALYST_PATH = os.path.realpath(
     os.environ.get("STOCK_ANALYST_PATH", DEFAULT_STOCK_ANALYST_PATH)
 )
 LEGACY_STOCK_ANALYST_PATH = os.path.realpath(
     os.path.join(os.path.dirname(__file__), "stock-analyst")
 )
-FASTAPI_UPSTREAM = os.getenv("FASTAPI_UPSTREAM", "http://127.0.0.1:8000").rstrip("/")
 ANALYSIS_RUNTIME_PYTHON = os.getenv(
     "ANALYSIS_RUNTIME_PYTHON",
     "/tmp/stock-analyst-venv/bin/python3",
@@ -40,64 +42,76 @@ try:
 except Exception as exc:
     generate_full_analysis = None
     ANALYSIS_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+    for root in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
+        module_path = os.path.join(root, "stock_analyst", "web_analyzer.py")
+        if not os.path.isfile(module_path):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location("stock_analyst_web_analyzer", module_path)
+            if spec and spec.loader:
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                generate_full_analysis = module.generate_full_analysis
+                ANALYSIS_IMPORT_ERROR = None
+                break
+        except Exception as load_exc:
+            ANALYSIS_IMPORT_ERROR = f"{type(load_exc).__name__}: {load_exc}"
+
+
+def _looks_like_ticker(value):
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9\.\-]{0,9}", (value or "").strip()))
+
+
+def _resolve_symbol_from_input(stock):
+    candidate = (stock or "").strip()
+    if not candidate or len(candidate) > 120:
+        return None
+
+    if _looks_like_ticker(candidate):
+        return candidate.upper()
+
+    try:
+        import yfinance as yf
+
+        search = yf.Search(query=candidate, max_results=5, news_count=0)
+        quotes = search.quotes or []
+        for quote in quotes:
+            symbol = quote.get("symbol")
+            if symbol and _looks_like_ticker(symbol):
+                return symbol.upper()
+    except Exception:
+        return None
+
+    return None
 
 
 class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     SEC_TICKERS_CACHE = None
-    FASTAPI_PROXY_PATH_PREFIXES = ("/api/", "/docs", "/openapi.json")
-    FASTAPI_PROXY_EXACT_PATHS = {"/health"}
+    SEC_TICKERS_CACHE_LOCK = threading.Lock()
+    AGENTS_DB_LOCK = threading.Lock()
+    MAX_PROXY_BODY_BYTES = 1_000_000
+    MAX_LOOKUP_QUERY_LEN = 120
+    STOCK_QUERY_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
+    AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,63}$")
 
-    def should_proxy_to_fastapi(self, path):
-        if path in self.FASTAPI_PROXY_EXACT_PATHS:
-            return True
-        return any(path.startswith(prefix) for prefix in self.FASTAPI_PROXY_PATH_PREFIXES)
-
-    def proxy_to_fastapi(self):
-        target_url = f"{FASTAPI_UPSTREAM}{self.path}"
-        payload = None
-        if self.command in {"POST", "PUT", "PATCH"}:
-            content_length = int(self.headers.get("Content-Length", "0") or 0)
-            payload = self.rfile.read(content_length) if content_length > 0 else b""
-
-        headers = {}
-        for name, value in self.headers.items():
-            if name.lower() in {"host", "connection", "content-length", "accept-encoding"}:
-                continue
-            headers[name] = value
-
-        headers["X-Forwarded-For"] = self.client_address[0]
-        headers["X-Forwarded-Proto"] = "https"
-        headers["X-Forwarded-Host"] = self.headers.get("Host", "api.istockpick.ai")
-
-        request = urllib.request.Request(target_url, data=payload, headers=headers, method=self.command)
-        try:
-            with urllib.request.urlopen(request, timeout=90) as response:
-                response_body = response.read()
-                self.send_response(response.status)
-                self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
-                self.send_header("Content-Length", str(len(response_body)))
-                self.end_headers()
-                self.wfile.write(response_body)
-        except urllib.error.HTTPError as err:
-            error_body = err.read()
-            self.send_response(err.code)
-            self.send_header("Content-Type", err.headers.get("Content-Type", "application/json"))
-            self.send_header("Content-Length", str(len(error_body)))
-            self.end_headers()
-            self.wfile.write(error_body)
-        except Exception:
-            self.send_json(502, {"error": "FastAPI upstream is unavailable."})
+    def end_headers(self):
+        # Baseline hardening headers for every response.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        super().end_headers()
 
     def do_GET(self):
         parsed_path = urlparse(self.path)
         query = parse_qs(parsed_path.query)
 
-        if self.should_proxy_to_fastapi(parsed_path.path):
-            self.proxy_to_fastapi()
-        elif parsed_path.path == '/':
+        if parsed_path.path == '/':
             self.serve_construction_page()
         elif parsed_path.path == '/health':
             self.serve_health_check()
+        elif parsed_path.path == '/api/v1/recommendation':
+            self.serve_api_recommendation_get(query)
         elif parsed_path.path == '/status':
             self.serve_status()
         elif parsed_path.path == '/lookup':
@@ -114,11 +128,204 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urlparse(self.path)
 
-        if self.should_proxy_to_fastapi(parsed_path.path):
-            self.proxy_to_fastapi()
+        if parsed_path.path == '/api/v1/agents/register':
+            self.serve_api_register_agent()
+            return
+        if parsed_path.path == '/api/v1/recommendation':
+            self.serve_api_recommendation_post()
             return
 
         self.send_json(404, {"error": "Unknown endpoint."})
+
+    def _read_json_body(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            self.send_json(400, {"error": "Invalid Content-Length header."})
+            return None
+        if content_length < 0:
+            self.send_json(400, {"error": "Invalid Content-Length header."})
+            return None
+        if content_length > self.MAX_PROXY_BODY_BYTES:
+            self.send_json(413, {"error": "Request body too large."})
+            return None
+
+        raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_json(400, {"error": "Invalid JSON payload."})
+            return None
+
+        if not isinstance(payload, dict):
+            self.send_json(400, {"error": "JSON object payload is required."})
+            return None
+        return payload
+
+    def _agents_db_path(self):
+        for root in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
+            if os.path.isdir(root):
+                return os.path.join(root, "data", "agents_db.txt")
+        return os.path.join(LEGACY_STOCK_ANALYST_PATH, "data", "agents_db.txt")
+
+    def _load_agents(self):
+        db_path = self._agents_db_path()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        if not os.path.exists(db_path):
+            with open(db_path, "w", encoding="utf-8") as f:
+                f.write('{"agents": {}}')
+
+        with open(db_path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError("Agent DB is corrupted")
+        agents = payload.get("agents", {})
+        if not isinstance(agents, dict):
+            raise ValueError("Agent DB has invalid format")
+        return agents
+
+    def _save_agents(self, agents):
+        db_path = self._agents_db_path()
+        payload = {"agents": agents}
+        tmp_path = f"{db_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, indent=2))
+        os.replace(tmp_path, db_path)
+
+    def _register_agent(self, name):
+        cleaned_name = (name or "").strip()
+        if not cleaned_name:
+            self.send_json(400, {"error": "Agent name cannot be empty"})
+            return
+        if len(cleaned_name) > 64:
+            self.send_json(400, {"error": "Agent name is too long"})
+            return
+        if not self.AGENT_NAME_PATTERN.fullmatch(cleaned_name):
+            self.send_json(400, {"error": "Invalid agent name format"})
+            return
+
+        with ConstructionHandler.AGENTS_DB_LOCK:
+            try:
+                agents = self._load_agents()
+            except ValueError:
+                self.send_json(500, {"error": "Agent database unavailable"})
+                return
+
+            if cleaned_name in agents:
+                self.send_json(409, {"error": f"Agent '{cleaned_name}' is already registered"})
+                return
+
+            existing_tokens = {record.get("token", "") for record in agents.values()}
+            token = ""
+            while not token or token in existing_tokens:
+                token = secrets.token_urlsafe(24)
+
+            created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            agents[cleaned_name] = {"token": token, "created_at": created_at}
+            self._save_agents(agents)
+
+        self.send_json(200, {"name": cleaned_name, "token": token, "created_at": created_at})
+
+    def _validate_agent(self, name, token):
+        cleaned_name = (name or "").strip()
+        cleaned_token = (token or "").strip()
+        if not cleaned_name or not cleaned_token:
+            self.send_json(401, {"error": "Agent name and token are required"})
+            return False
+        if len(cleaned_name) > 64 or len(cleaned_token) > 256:
+            self.send_json(401, {"error": "Invalid credentials"})
+            return False
+        if not self.AGENT_NAME_PATTERN.fullmatch(cleaned_name):
+            self.send_json(401, {"error": "Invalid credentials"})
+            return False
+
+        with ConstructionHandler.AGENTS_DB_LOCK:
+            try:
+                agents = self._load_agents()
+            except ValueError:
+                self.send_json(500, {"error": "Agent database unavailable"})
+                return False
+            record = agents.get(cleaned_name)
+
+        if not record:
+            self.send_json(401, {"error": "Unknown agent"})
+            return False
+        expected_token = record.get("token", "")
+        if not expected_token or not secrets.compare_digest(expected_token, cleaned_token):
+            self.send_json(401, {"error": "Invalid agent token"})
+            return False
+        return True
+
+    def _build_recommendation_response(self, stock):
+        stock = (stock or "").strip()
+        if not stock:
+            self.send_json(400, {"error": "Stock input is required"})
+            return
+        if len(stock) > 120:
+            self.send_json(400, {"error": "Stock input is too long"})
+            return
+
+        resolved_symbol = _resolve_symbol_from_input(stock)
+        if not resolved_symbol:
+            self.send_json(
+                400,
+                {
+                    "error": (
+                        "Could not resolve stock input to a ticker. "
+                        "Provide a valid ticker (for example, AAPL) or a company name."
+                    )
+                },
+            )
+            return
+
+        try:
+            analysis = generate_full_analysis(resolved_symbol)
+        except Exception:
+            self.send_json(502, {"error": f"Failed to generate recommendation for {resolved_symbol}"})
+            return
+        if analysis.get("ai_recommendation") is None:
+            self.send_json(502, {"error": f"Recommendation unavailable for {resolved_symbol}"})
+            return
+
+        self.send_json(
+            200,
+            {
+                "input": stock,
+                "resolved_symbol": resolved_symbol,
+                "company": analysis.get("company"),
+                "recommendation": analysis["ai_recommendation"],
+                "generated_at": analysis.get("generated_at"),
+            },
+        )
+
+    def serve_api_register_agent(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+        self._register_agent(payload.get("name", ""))
+
+    def serve_api_recommendation_get(self, query):
+        stock = query.get("stock", [""])[0]
+        agent_name = query.get("agent_name", [""])[0]
+        agent_token = query.get("agent_token", [""])[0]
+
+        if not self._validate_agent(agent_name, agent_token):
+            return
+        self._build_recommendation_response(stock)
+
+    def serve_api_recommendation_post(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        if not self._validate_agent(payload.get("agent_name", ""), payload.get("agent_token", "")):
+            return
+        self._build_recommendation_response(payload.get("stock", ""))
     
     def serve_construction_page(self):
         """Serve the in construction page"""
@@ -480,6 +687,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         if not query:
             self.send_json(400, {"error": "Please provide a stock ticker or company name."})
             return
+        if len(query) > self.MAX_LOOKUP_QUERY_LEN:
+            self.send_json(400, {"error": "Query is too long."})
+            return
 
         try:
             result = self.lookup_public_stock(query)
@@ -500,6 +710,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         if not query:
             self.send_json(400, {"error": "Please provide a stock symbol to analyze."})
             return
+        if len(query) > 12 or not self.STOCK_QUERY_PATTERN.fullmatch(query):
+            self.send_json(400, {"error": "Please provide a valid stock ticker symbol (e.g., AAPL)."})
+            return
 
         try:
             public_stock = self.lookup_ticker(query)
@@ -510,13 +723,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             if generate_full_analysis is None:
                 try:
                     analysis = self.generate_full_analysis_subprocess(query)
-                except Exception as exc:
+                except Exception:
                     self.send_json(500, {
-                        "error": "stock_analyst analysis functions are unavailable.",
-                        "import_error": ANALYSIS_IMPORT_ERROR,
-                        "fallback_error": f"{type(exc).__name__}: {exc}",
-                        "search_paths": [STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH],
-                        "analysis_runtime_python": ANALYSIS_RUNTIME_PYTHON,
+                        "error": "Analysis engine is temporarily unavailable.",
                     })
                     return
             else:
@@ -524,19 +733,24 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
             analysis["company"] = public_stock.get("name", analysis.get("company", query))
             self.send_json(200, analysis)
-        except Exception:
+        except Exception as exc:
+            self.log_error("analyze failed for %s: %s", query, exc)
             self.send_json(502, {"error": "Unable to generate analysis right now. Please try again."})
 
     def generate_full_analysis_subprocess(self, symbol):
         script = (
             "import json, sys\n"
-            f"sys.path.insert(0, {STOCK_ANALYST_PATH!r})\n"
-            "from stock_analyst.web_analyzer import generate_full_analysis\n"
-            "result = generate_full_analysis(sys.argv[1])\n"
+            f"sys.path.insert(0, {os.path.join(STOCK_ANALYST_PATH, 'stock_analyst')!r})\n"
+            f"sys.path.insert(0, {os.path.join(LEGACY_STOCK_ANALYST_PATH, 'stock_analyst')!r})\n"
+            "import web_analyzer\n"
+            "result = web_analyzer.generate_full_analysis(sys.argv[1])\n"
             "print(json.dumps(result))\n"
         )
+        runtime_python = ANALYSIS_RUNTIME_PYTHON
+        if not os.path.isfile(runtime_python):
+            runtime_python = sys.executable
         result = subprocess.run(
-            [ANALYSIS_RUNTIME_PYTHON, "-c", script, symbol],
+            [runtime_python, "-c", script, symbol],
             capture_output=True,
             text=True,
             timeout=120,
@@ -563,26 +777,27 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         return self.lookup_company_name(query)
 
     def get_sec_tickers(self):
-        if ConstructionHandler.SEC_TICKERS_CACHE is not None:
-            return ConstructionHandler.SEC_TICKERS_CACHE
+        with ConstructionHandler.SEC_TICKERS_CACHE_LOCK:
+            if ConstructionHandler.SEC_TICKERS_CACHE is not None:
+                return ConstructionHandler.SEC_TICKERS_CACHE
 
-        req = urllib.request.Request(
-            "https://www.sec.gov/files/company_tickers.json",
-            headers={"User-Agent": "iStockPick/1.0 (admin@istockpick.ai)"}
-        )
+            req = urllib.request.Request(
+                "https://www.sec.gov/files/company_tickers.json",
+                headers={"User-Agent": "iStockPick/1.0 (admin@istockpick.ai)"}
+            )
 
-        with urllib.request.urlopen(req, timeout=8) as response:
-            data = json.loads(response.read().decode('utf-8'))
+            with urllib.request.urlopen(req, timeout=8) as response:
+                data = json.loads(response.read().decode('utf-8'))
 
-        tickers = []
-        for item in data.values():
-            ticker = (item.get('ticker') or '').strip().upper()
-            title = (item.get('title') or '').strip()
-            if ticker and title:
-                tickers.append({"symbol": ticker, "name": title})
+            tickers = []
+            for item in data.values():
+                ticker = (item.get('ticker') or '').strip().upper()
+                title = (item.get('title') or '').strip()
+                if ticker and title:
+                    tickers.append({"symbol": ticker, "name": title})
 
-        ConstructionHandler.SEC_TICKERS_CACHE = tickers
-        return tickers
+            ConstructionHandler.SEC_TICKERS_CACHE = tickers
+            return tickers
 
     def lookup_ticker(self, symbol):
         for item in self.get_sec_tickers():
@@ -605,27 +820,16 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         return None
 
     def send_json(self, status_code, payload):
+        body = json.dumps(payload).encode()
         self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(payload).encode())
+        self.wfile.write(body)
     
     def serve_health_check(self):
-        """Serve health check endpoint"""
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/plain')
-        self.end_headers()
-        
-        health_data = {
-            "status": "healthy",
-            "timestamp": datetime.datetime.now().isoformat(),
-            "server": "OpenClaw Web Server",
-            "version": "1.0.0",
-            "port": 8001,
-            "mode": "live"
-        }
-        
-        self.wfile.write(json.dumps(health_data, indent=2).encode())
+        """Serve FastAPI-compatible health payload."""
+        self.send_json(200, {"status": "ok"})
     
     def serve_status(self):
         """Serve detailed status information"""
@@ -690,7 +894,11 @@ def main():
     
     try:
         # Bind to all interfaces (0.0.0.0) instead of localhost
-        with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:
+        class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+            daemon_threads = True
+            allow_reuse_address = True
+
+        with ThreadingHTTPServer(("0.0.0.0", PORT), Handler) as httpd:
             print("✅ Server started successfully on all interfaces!")
             print("External access available at: http://107.3.167.1:8080")
             print("Press Ctrl+C to stop the server")
