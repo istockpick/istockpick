@@ -37,10 +37,11 @@ for p in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
         sys.path.insert(0, p)
 
 try:
-    from stock_analyst.web_analyzer import generate_full_analysis
+    from stock_analyst.web_analyzer import generate_full_analysis, generate_scoring_data
     ANALYSIS_IMPORT_ERROR = None
 except Exception as exc:
     generate_full_analysis = None
+    generate_scoring_data = None
     ANALYSIS_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
     for root in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
         module_path = os.path.join(root, "stock_analyst", "web_analyzer.py")
@@ -52,6 +53,7 @@ except Exception as exc:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 generate_full_analysis = module.generate_full_analysis
+                generate_scoring_data = getattr(module, "generate_scoring_data", None)
                 ANALYSIS_IMPORT_ERROR = None
                 break
         except Exception as load_exc:
@@ -85,6 +87,33 @@ def _resolve_symbol_from_input(stock):
     return None
 
 
+def _parse_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _parse_weights_payload(raw_weights):
+    if raw_weights in (None, ""):
+        return None
+    if isinstance(raw_weights, dict):
+        return raw_weights
+    if isinstance(raw_weights, str):
+        try:
+            payload = json.loads(raw_weights)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
 class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     SEC_TICKERS_CACHE = None
     SEC_TICKERS_CACHE_LOCK = threading.Lock()
@@ -112,6 +141,8 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.serve_health_check()
         elif parsed_path.path == '/api/v1/recommendation':
             self.serve_api_recommendation_get(query)
+        elif parsed_path.path == '/api/v1/scoring-data':
+            self.serve_api_scoring_data_get(query)
         elif parsed_path.path == '/status':
             self.serve_status()
         elif parsed_path.path == '/lookup':
@@ -133,6 +164,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed_path.path == '/api/v1/recommendation':
             self.serve_api_recommendation_post()
+            return
+        if parsed_path.path == '/api/v1/scoring-data':
+            self.serve_api_scoring_data_post()
             return
 
         self.send_json(404, {"error": "Unknown endpoint."})
@@ -261,7 +295,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return False
         return True
 
-    def _build_recommendation_response(self, stock):
+    def _build_recommendation_response(self, stock, verbose=False):
         stock = (stock or "").strip()
         if not stock:
             self.send_json(400, {"error": "Stock input is required"})
@@ -292,13 +326,25 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(502, {"error": f"Recommendation unavailable for {resolved_symbol}"})
             return
 
+        action = analysis["ai_recommendation"].get("action")
+        if not action:
+            self.send_json(502, {"error": f"Recommendation action unavailable for {resolved_symbol}"})
+            return
+
+        if not verbose:
+            self.send_json(200, {"recommendation": action})
+            return
+
         self.send_json(
             200,
             {
                 "input": stock,
                 "resolved_symbol": resolved_symbol,
                 "company": analysis.get("company"),
-                "recommendation": analysis["ai_recommendation"],
+                "stock_analysis": analysis.get("stock_analysis"),
+                "sentiment_analysis": analysis.get("sentiment_analysis"),
+                "ai_recommendation": analysis.get("ai_recommendation"),
+                "scoring_weights": analysis.get("scoring_weights"),
                 "generated_at": analysis.get("generated_at"),
             },
         )
@@ -313,10 +359,13 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         stock = query.get("stock", [""])[0]
         agent_name = query.get("agent_name", [""])[0]
         agent_token = query.get("agent_token", [""])[0]
+        verbose = _parse_bool(query.get("verbose", [""])[0], default=False)
+        if "verborse" in query:
+            verbose = _parse_bool(query.get("verborse", [""])[0], default=verbose)
 
         if not self._validate_agent(agent_name, agent_token):
             return
-        self._build_recommendation_response(stock)
+        self._build_recommendation_response(stock, verbose=verbose)
 
     def serve_api_recommendation_post(self):
         payload = self._read_json_body()
@@ -325,7 +374,76 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         if not self._validate_agent(payload.get("agent_name", ""), payload.get("agent_token", "")):
             return
-        self._build_recommendation_response(payload.get("stock", ""))
+        verbose = _parse_bool(payload.get("verbose"), default=False)
+        if "verborse" in payload:
+            verbose = _parse_bool(payload.get("verborse"), default=verbose)
+        self._build_recommendation_response(payload.get("stock", ""), verbose=verbose)
+
+    def _build_scoring_data_response(self, stock, weights=None):
+        stock = (stock or "").strip()
+        if not stock:
+            self.send_json(400, {"error": "Stock input is required"})
+            return
+        if len(stock) > 120:
+            self.send_json(400, {"error": "Stock input is too long"})
+            return
+
+        resolved_symbol = _resolve_symbol_from_input(stock)
+        if not resolved_symbol:
+            self.send_json(
+                400,
+                {
+                    "error": (
+                        "Could not resolve stock input to a ticker. "
+                        "Provide a valid ticker (for example, AAPL) or a company name."
+                    )
+                },
+            )
+            return
+
+        if generate_scoring_data is None:
+            self.send_json(503, {"error": "Scoring-data endpoint is unavailable on this runtime"})
+            return
+
+        try:
+            data = generate_scoring_data(resolved_symbol, weights=weights)
+        except Exception:
+            self.send_json(502, {"error": f"Failed to load scoring data for {resolved_symbol}"})
+            return
+
+        self.send_json(
+            200,
+            {
+                "input": stock,
+                "resolved_symbol": resolved_symbol,
+                "company": data.get("company"),
+                "price": data.get("price"),
+                "snapshot": data.get("snapshot"),
+                "scoring_inputs": data.get("scoring_inputs"),
+                "scoring_weights": data.get("scoring_weights"),
+                "generated_at": data.get("generated_at"),
+            },
+        )
+
+    def serve_api_scoring_data_get(self, query):
+        stock = query.get("stock", [""])[0]
+        agent_name = query.get("agent_name", [""])[0]
+        agent_token = query.get("agent_token", [""])[0]
+        weights = _parse_weights_payload(query.get("weights", [""])[0])
+
+        if not self._validate_agent(agent_name, agent_token):
+            return
+        self._build_scoring_data_response(stock, weights=weights)
+
+    def serve_api_scoring_data_post(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        if not self._validate_agent(payload.get("agent_name", ""), payload.get("agent_token", "")):
+            return
+        weights = _parse_weights_payload(payload.get("weights"))
+        self._build_scoring_data_response(payload.get("stock", ""), weights=weights)
     
     def serve_construction_page(self):
         """Serve the in construction page"""

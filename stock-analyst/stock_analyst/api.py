@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from .web_analyzer import generate_full_analysis
+from .web_analyzer import generate_full_analysis, generate_scoring_data
 
 _DB_LOCK = threading.Lock()
 _MAX_STOCK_INPUT_LEN = 120
@@ -22,10 +22,124 @@ class RecommendationRequest(BaseModel):
     stock: str = Field(..., description="Ticker symbol or company name")
     agent_name: str = Field(..., description="Registered agent name")
     agent_token: str = Field(..., description="Registered agent token")
+    weights: Optional["ScoringWeights"] = Field(
+        default=None,
+        description="Optional scoring weight overrides",
+    )
+    verbose: bool = Field(
+        default=False,
+        description="If true, return detailed recommendation sections",
+    )
+    verborse: Optional[bool] = Field(
+        default=None,
+        description="Deprecated alias for verbose",
+    )
 
 
 class AgentRegistrationRequest(BaseModel):
     name: str = Field(..., description="Unique agent name")
+
+
+class BatchRecommendationRequest(BaseModel):
+    stocks: list[str] = Field(..., description="List of ticker symbols or company names")
+    agent_name: str = Field(..., description="Registered agent name")
+    agent_token: str = Field(..., description="Registered agent token")
+    weights: Optional["ScoringWeights"] = Field(
+        default=None,
+        description="Optional scoring weight overrides",
+    )
+    verbose: bool = Field(
+        default=False,
+        description="If true, return detailed recommendation sections per stock",
+    )
+    verborse: Optional[bool] = Field(
+        default=None,
+        description="Deprecated alias for verbose",
+    )
+
+
+class ScoringDataRequest(BaseModel):
+    stock: str = Field(..., description="Ticker symbol or company name")
+    agent_name: str = Field(..., description="Registered agent name")
+    agent_token: str = Field(..., description="Registered agent token")
+    weights: Optional["ScoringWeights"] = Field(
+        default=None,
+        description="Optional scoring weight overrides",
+    )
+
+
+class ScoringWeights(BaseModel):
+    base_score: Optional[float] = Field(default=None, ge=0, le=100)
+    trend_bullish: Optional[float] = Field(default=None, ge=0, le=100)
+    trend_bearish: Optional[float] = Field(default=None, ge=0, le=100)
+    high_volume_bonus: Optional[float] = Field(default=None, ge=0, le=100)
+    ma_bullish_bonus: Optional[float] = Field(default=None, ge=0, le=100)
+    ma_bearish_penalty: Optional[float] = Field(default=None, ge=0, le=100)
+    price_above_ma_bonus: Optional[float] = Field(default=None, ge=0, le=100)
+    price_below_ma_penalty: Optional[float] = Field(default=None, ge=0, le=100)
+    volume_ratio_threshold: Optional[float] = Field(default=None, ge=0.1, le=10)
+    sentiment_buy_threshold: Optional[float] = Field(default=None, ge=0, le=100)
+    sentiment_sell_threshold: Optional[float] = Field(default=None, ge=0, le=100)
+    action_buy_threshold: Optional[float] = Field(default=None, ge=0, le=100)
+    action_sell_threshold: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+def _rebuild_forward_refs() -> None:
+    for model in (RecommendationRequest, BatchRecommendationRequest, ScoringDataRequest):
+        if hasattr(model, "model_rebuild"):
+            model.model_rebuild()
+        elif hasattr(model, "update_forward_refs"):
+            model.update_forward_refs()
+
+
+def _weights_to_payload(weights: Optional[ScoringWeights]) -> Optional[dict]:
+    if weights is None:
+        return None
+    if hasattr(weights, "model_dump"):
+        payload = weights.model_dump(exclude_none=True)
+    else:
+        payload = weights.dict(exclude_none=True)
+    if (
+        "sentiment_buy_threshold" in payload
+        and "sentiment_sell_threshold" in payload
+        and payload["sentiment_sell_threshold"] >= payload["sentiment_buy_threshold"]
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="sentiment_sell_threshold must be less than sentiment_buy_threshold",
+        )
+    if (
+        "action_buy_threshold" in payload
+        and "action_sell_threshold" in payload
+        and payload["action_sell_threshold"] >= payload["action_buy_threshold"]
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="action_sell_threshold must be less than action_buy_threshold",
+        )
+    return payload
+
+
+def _parse_weights_query(weights: Optional[str]) -> Optional[dict]:
+    if weights is None or not weights.strip():
+        return None
+    try:
+        payload = json.loads(weights)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid weights JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="weights must be a JSON object")
+    try:
+        parsed = ScoringWeights(**payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid weights payload: {exc.errors()}") from exc
+    return _weights_to_payload(parsed)
+
+
+def _resolve_verbose_flag(verbose: bool = False, verborse: Optional[bool] = None) -> bool:
+    if verborse is not None:
+        return bool(verborse)
+    return bool(verbose)
 
 
 def _looks_like_ticker(value: str) -> bool:
@@ -75,14 +189,97 @@ def create_app() -> FastAPI:
         stock: str = Query(..., description="Ticker symbol or company name"),
         agent_name: str = Query(..., description="Registered agent name"),
         agent_token: str = Query(..., description="Registered agent token"),
+        verbose: bool = Query(
+            default=False,
+            description="If true, return detailed recommendation sections",
+        ),
+        verborse: Optional[bool] = Query(
+            default=None,
+            description="Deprecated alias for verbose",
+        ),
+        weights: Optional[str] = Query(
+            default=None,
+            description="Optional JSON-encoded scoring weights",
+        ),
     ) -> dict:
         _validate_agent(agent_name, agent_token)
-        return _build_recommendation_response(stock)
+        weights_payload = _parse_weights_query(weights)
+        verbose_flag = _resolve_verbose_flag(verbose=verbose, verborse=verborse)
+        return _build_recommendation_response(
+            stock,
+            weights_payload,
+            verbose=verbose_flag,
+        )
 
     @app.post("/api/v1/recommendation")
     def post_recommendation(request: RecommendationRequest) -> dict:
         _validate_agent(request.agent_name, request.agent_token)
-        return _build_recommendation_response(request.stock)
+        verbose_flag = _resolve_verbose_flag(verbose=request.verbose, verborse=request.verborse)
+        return _build_recommendation_response(
+            request.stock,
+            _weights_to_payload(request.weights),
+            verbose=verbose_flag,
+        )
+
+    @app.get("/api/v1/recommendations")
+    def get_recommendations(
+        stocks: str = Query(..., description="Comma-separated ticker symbols or company names"),
+        agent_name: str = Query(..., description="Registered agent name"),
+        agent_token: str = Query(..., description="Registered agent token"),
+        verbose: bool = Query(
+            default=False,
+            description="If true, return detailed recommendation sections per stock",
+        ),
+        verborse: Optional[bool] = Query(
+            default=None,
+            description="Deprecated alias for verbose",
+        ),
+        weights: Optional[str] = Query(
+            default=None,
+            description="Optional JSON-encoded scoring weights",
+        ),
+    ) -> dict:
+        _validate_agent(agent_name, agent_token)
+        parsed_stocks = _parse_batch_stocks(stocks)
+        weights_payload = _parse_weights_query(weights)
+        verbose_flag = _resolve_verbose_flag(verbose=verbose, verborse=verborse)
+        return _build_batch_recommendation_response(
+            parsed_stocks,
+            weights_payload,
+            verbose=verbose_flag,
+        )
+
+    @app.post("/api/v1/recommendations")
+    def post_recommendations(request: BatchRecommendationRequest) -> dict:
+        _validate_agent(request.agent_name, request.agent_token)
+        verbose_flag = _resolve_verbose_flag(verbose=request.verbose, verborse=request.verborse)
+        return _build_batch_recommendation_response(
+            request.stocks,
+            _weights_to_payload(request.weights),
+            verbose=verbose_flag,
+        )
+
+    @app.get("/api/v1/scoring-data")
+    def get_scoring_data(
+        stock: str = Query(..., description="Ticker symbol or company name"),
+        agent_name: str = Query(..., description="Registered agent name"),
+        agent_token: str = Query(..., description="Registered agent token"),
+        weights: Optional[str] = Query(
+            default=None,
+            description="Optional JSON-encoded scoring weights",
+        ),
+    ) -> dict:
+        _validate_agent(agent_name, agent_token)
+        weights_payload = _parse_weights_query(weights)
+        return _build_scoring_data_response(stock, weights_payload)
+
+    @app.post("/api/v1/scoring-data")
+    def post_scoring_data(request: ScoringDataRequest) -> dict:
+        _validate_agent(request.agent_name, request.agent_token)
+        return _build_scoring_data_response(
+            request.stock,
+            _weights_to_payload(request.weights),
+        )
 
     return app
 
@@ -185,7 +382,11 @@ def _validate_agent(name: str, token: str) -> None:
         raise HTTPException(status_code=401, detail="Invalid agent token")
 
 
-def _build_recommendation_response(stock: str) -> dict:
+def _build_recommendation_response(
+    stock: str,
+    weights: Optional[dict] = None,
+    verbose: bool = False,
+) -> dict:
     stock = stock.strip()
     if not stock:
         raise HTTPException(status_code=400, detail="Stock input is required")
@@ -203,7 +404,7 @@ def _build_recommendation_response(stock: str) -> dict:
         )
 
     try:
-        analysis = generate_full_analysis(resolved_symbol)
+        analysis = generate_full_analysis(resolved_symbol, weights=weights)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -216,13 +417,117 @@ def _build_recommendation_response(stock: str) -> dict:
             detail=f"Recommendation unavailable for {resolved_symbol}",
         )
 
+    action = analysis["ai_recommendation"].get("action")
+    if not action:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Recommendation action unavailable for {resolved_symbol}",
+        )
+
+    if not verbose:
+        return {"recommendation": action}
+
     return {
         "input": stock,
         "resolved_symbol": resolved_symbol,
         "company": analysis.get("company"),
-        "recommendation": analysis["ai_recommendation"],
+        "stock_analysis": analysis.get("stock_analysis"),
+        "sentiment_analysis": analysis.get("sentiment_analysis"),
+        "ai_recommendation": analysis.get("ai_recommendation"),
+        "scoring_weights": analysis.get("scoring_weights"),
         "generated_at": analysis.get("generated_at"),
     }
 
 
+def _parse_batch_stocks(stocks: str) -> list[str]:
+    # Accept comma-separated values from GET query and normalize whitespace.
+    entries = [item.strip() for item in stocks.split(",")]
+    values = [item for item in entries if item]
+    if not values:
+        raise HTTPException(status_code=400, detail="At least one stock is required")
+    if len(values) > 25:
+        raise HTTPException(status_code=400, detail="Maximum 25 stocks per request")
+    return values
+
+
+def _build_batch_recommendation_response(
+    stocks: list[str],
+    weights: Optional[dict] = None,
+    verbose: bool = False,
+) -> dict:
+    if not stocks:
+        raise HTTPException(status_code=400, detail="At least one stock is required")
+    if len(stocks) > 25:
+        raise HTTPException(status_code=400, detail="Maximum 25 stocks per request")
+
+    results = []
+    for stock in stocks:
+        try:
+            result = _build_recommendation_response(
+                stock,
+                weights=weights,
+                verbose=verbose,
+            )
+            result["status"] = "ok"
+            results.append(result)
+        except HTTPException as exc:
+            results.append(
+                {
+                    "input": stock,
+                    "status": "error",
+                    "error": {
+                        "code": exc.status_code,
+                        "message": exc.detail,
+                    },
+                }
+            )
+
+    success_count = sum(1 for item in results if item.get("status") == "ok")
+    error_count = len(results) - success_count
+    return {
+        "total": len(results),
+        "success": success_count,
+        "errors": error_count,
+        "results": results,
+    }
+
+
+def _build_scoring_data_response(stock: str, weights: Optional[dict] = None) -> dict:
+    stock = stock.strip()
+    if not stock:
+        raise HTTPException(status_code=400, detail="Stock input is required")
+    if len(stock) > _MAX_STOCK_INPUT_LEN:
+        raise HTTPException(status_code=400, detail="Stock input is too long")
+
+    resolved_symbol = _resolve_symbol(stock)
+    if not resolved_symbol:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Could not resolve stock input to a ticker. "
+                "Provide a valid ticker (for example, AAPL) or a company name."
+            ),
+        )
+
+    try:
+        data = generate_scoring_data(resolved_symbol, weights=weights)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to load scoring data for {resolved_symbol}",
+        ) from exc
+
+    return {
+        "input": stock,
+        "resolved_symbol": resolved_symbol,
+        "company": data.get("company"),
+        "price": data.get("price"),
+        "snapshot": data.get("snapshot"),
+        "scoring_inputs": data.get("scoring_inputs"),
+        "scoring_weights": data.get("scoring_weights"),
+        "generated_at": data.get("generated_at"),
+    }
+
+
+_rebuild_forward_refs()
 app = create_app()

@@ -7,12 +7,45 @@ import re
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from typing import Optional
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
 _MAX_HTTP_RESPONSE_BYTES = 2_000_000
 _DEFAULT_ALPACA_CREDS_PATH = os.path.expanduser("~/.configuration/alpaca/credentionals.json")
 _DEFAULT_ALPACA_CREDS_ALT_PATH = os.path.expanduser("~/.configuration/alpaca/credentials.json")
 logger = logging.getLogger(__name__)
+
+DEFAULT_SCORING_WEIGHTS = {
+    "base_score": 50.0,
+    "trend_bullish": 15.0,
+    "trend_bearish": 15.0,
+    "high_volume_bonus": 8.0,
+    "ma_bullish_bonus": 7.0,
+    "ma_bearish_penalty": 7.0,
+    "price_above_ma_bonus": 5.0,
+    "price_below_ma_penalty": 5.0,
+    "volume_ratio_threshold": 1.5,
+    "sentiment_buy_threshold": 65.0,
+    "sentiment_sell_threshold": 35.0,
+    "action_buy_threshold": 65.0,
+    "action_sell_threshold": 35.0,
+}
+
+_WEIGHT_LIMITS = {
+    "base_score": (0.0, 100.0),
+    "trend_bullish": (0.0, 100.0),
+    "trend_bearish": (0.0, 100.0),
+    "high_volume_bonus": (0.0, 100.0),
+    "ma_bullish_bonus": (0.0, 100.0),
+    "ma_bearish_penalty": (0.0, 100.0),
+    "price_above_ma_bonus": (0.0, 100.0),
+    "price_below_ma_penalty": (0.0, 100.0),
+    "volume_ratio_threshold": (0.1, 10.0),
+    "sentiment_buy_threshold": (0.0, 100.0),
+    "sentiment_sell_threshold": (0.0, 100.0),
+    "action_buy_threshold": (0.0, 100.0),
+    "action_sell_threshold": (0.0, 100.0),
+}
 
 
 def _fetch_text(url: str) -> str:
@@ -218,33 +251,120 @@ def get_stock_snapshot(symbol: str) -> dict:
                 raise ValueError(f"All market data providers failed for {symbol}: {yf_exc}") from yf_exc
 
 
-def get_sentiment(snapshot: dict) -> dict:
-    score = 50
+def _resolve_scoring_weights(weights: Optional[dict]) -> dict:
+    resolved = dict(DEFAULT_SCORING_WEIGHTS)
+    if weights is None:
+        return resolved
+    if not isinstance(weights, dict):
+        raise ValueError("weights must be a JSON object")
+
+    unknown = set(weights.keys()) - set(DEFAULT_SCORING_WEIGHTS.keys())
+    if unknown:
+        unknown_str = ", ".join(sorted(unknown))
+        raise ValueError(f"Unknown weight keys: {unknown_str}")
+
+    for key, value in weights.items():
+        try:
+            numeric = float(value)
+        except Exception as exc:
+            raise ValueError(f"Weight '{key}' must be numeric") from exc
+        lo, hi = _WEIGHT_LIMITS[key]
+        if numeric < lo or numeric > hi:
+            raise ValueError(f"Weight '{key}' must be between {lo} and {hi}")
+        resolved[key] = numeric
+
+    if resolved["sentiment_sell_threshold"] >= resolved["sentiment_buy_threshold"]:
+        raise ValueError("sentiment_sell_threshold must be less than sentiment_buy_threshold")
+    if resolved["action_sell_threshold"] >= resolved["action_buy_threshold"]:
+        raise ValueError("action_sell_threshold must be less than action_buy_threshold")
+
+    return resolved
+
+
+def _build_scoring_breakdown(snapshot: dict, weights: dict) -> dict:
+    sentiment_start = weights["base_score"]
+    trend_delta = 0.0
+    if snapshot["trend"] == "BULLISH":
+        trend_delta = weights["trend_bullish"]
+    elif snapshot["trend"] == "BEARISH":
+        trend_delta = -weights["trend_bearish"]
+
+    high_volume_applied = snapshot.get("volume_ratio", 1) > weights["volume_ratio_threshold"]
+    volume_delta = weights["high_volume_bonus"] if high_volume_applied else 0.0
+
+    ma_bullish = snapshot["fifty_day_avg"] > snapshot["two_hundred_day_avg"]
+    ma_delta = weights["ma_bullish_bonus"] if ma_bullish else -weights["ma_bearish_penalty"]
+
+    sentiment_pre_clamp = sentiment_start + trend_delta + volume_delta + ma_delta
+    sentiment_score = max(0, min(100, sentiment_pre_clamp))
+
+    action_delta = (
+        weights["price_above_ma_bonus"]
+        if snapshot["price"] > snapshot["fifty_day_avg"]
+        else -weights["price_below_ma_penalty"]
+    )
+    action_pre_clamp = sentiment_score + action_delta
+    action_score = max(0, min(100, action_pre_clamp))
+
+    return {
+        "sentiment_inputs": {
+            "base_score": sentiment_start,
+            "trend": snapshot["trend"],
+            "trend_delta": trend_delta,
+            "volume_ratio": snapshot.get("volume_ratio", 1),
+            "volume_ratio_threshold": weights["volume_ratio_threshold"],
+            "high_volume_applied": high_volume_applied,
+            "volume_delta": volume_delta,
+            "fifty_day_avg": snapshot["fifty_day_avg"],
+            "two_hundred_day_avg": snapshot["two_hundred_day_avg"],
+            "ma_bullish": ma_bullish,
+            "ma_delta": ma_delta,
+            "pre_clamp_score": sentiment_pre_clamp,
+            "score": sentiment_score,
+            "bullish_threshold": weights["sentiment_buy_threshold"],
+            "bearish_threshold": weights["sentiment_sell_threshold"],
+        },
+        "action_inputs": {
+            "price": snapshot["price"],
+            "fifty_day_avg": snapshot["fifty_day_avg"],
+            "price_above_fifty_day_avg": snapshot["price"] > snapshot["fifty_day_avg"],
+            "action_delta": action_delta,
+            "pre_clamp_confidence": action_pre_clamp,
+            "confidence": action_score,
+            "buy_threshold": weights["action_buy_threshold"],
+            "sell_threshold": weights["action_sell_threshold"],
+        },
+    }
+
+
+def get_sentiment(snapshot: dict, weights: Optional[dict] = None) -> dict:
+    active_weights = _resolve_scoring_weights(weights)
+    score = active_weights["base_score"]
     drivers = []
 
     if snapshot["trend"] == "BULLISH":
-        score += 15
+        score += active_weights["trend_bullish"]
         drivers.append("positive price momentum")
     elif snapshot["trend"] == "BEARISH":
-        score -= 15
+        score -= active_weights["trend_bearish"]
         drivers.append("negative price momentum")
 
-    if snapshot.get("volume_ratio", 1) > 1.5:
-        score += 8
+    if snapshot.get("volume_ratio", 1) > active_weights["volume_ratio_threshold"]:
+        score += active_weights["high_volume_bonus"]
         drivers.append("elevated trading volume")
 
     if snapshot["fifty_day_avg"] > snapshot["two_hundred_day_avg"]:
-        score += 7
+        score += active_weights["ma_bullish_bonus"]
         drivers.append("50D MA above 200D MA")
     else:
-        score -= 7
+        score -= active_weights["ma_bearish_penalty"]
         drivers.append("50D MA below 200D MA")
 
     score = max(0, min(100, score))
     label = "neutral"
-    if score >= 65:
+    if score >= active_weights["sentiment_buy_threshold"]:
         label = "bullish"
-    elif score <= 35:
+    elif score <= active_weights["sentiment_sell_threshold"]:
         label = "bearish"
 
     return {
@@ -252,23 +372,25 @@ def get_sentiment(snapshot: dict) -> dict:
         "label": label,
         "summary": f"Market sentiment appears {label} (score {score}/100).",
         "drivers": drivers,
+        "weights_used": active_weights,
     }
 
 
-def get_ai_recommendation(snapshot: dict, sentiment: dict) -> dict:
+def get_ai_recommendation(snapshot: dict, sentiment: dict, weights: Optional[dict] = None) -> dict:
+    active_weights = _resolve_scoring_weights(weights)
     score = sentiment["score"]
 
     if snapshot["price"] > snapshot["fifty_day_avg"]:
-        score += 5
+        score += active_weights["price_above_ma_bonus"]
     else:
-        score -= 5
+        score -= active_weights["price_below_ma_penalty"]
 
     score = max(0, min(100, score))
 
     action = "HOLD"
-    if score >= 65:
+    if score >= active_weights["action_buy_threshold"]:
         action = "BUY"
-    elif score <= 35:
+    elif score <= active_weights["action_sell_threshold"]:
         action = "SELL"
 
     return {
@@ -276,13 +398,15 @@ def get_ai_recommendation(snapshot: dict, sentiment: dict) -> dict:
         "confidence": score,
         "summary": f"AI recommendation: {action} based on trend, volume, and sentiment.",
         "disclaimer": "For informational purposes only, not financial advice.",
+        "weights_used": active_weights,
     }
 
 
-def generate_full_analysis(symbol: str) -> dict:
+def generate_full_analysis(symbol: str, weights: Optional[dict] = None) -> dict:
+    active_weights = _resolve_scoring_weights(weights)
     snapshot = get_stock_snapshot(symbol)
-    sentiment = get_sentiment(snapshot)
-    ai_reco = get_ai_recommendation(snapshot, sentiment)
+    sentiment = get_sentiment(snapshot, active_weights)
+    ai_reco = get_ai_recommendation(snapshot, sentiment, active_weights)
 
     stock_summary = {
         "summary": f"${snapshot['price']:.2f} • Trend: {snapshot['trend']} • 1D change: {snapshot['change_pct']:.2f}%",
@@ -295,5 +419,22 @@ def generate_full_analysis(symbol: str) -> dict:
         "stock_analysis": stock_summary,
         "sentiment_analysis": sentiment,
         "ai_recommendation": ai_reco,
+        "scoring_weights": active_weights,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def generate_scoring_data(symbol: str, weights: Optional[dict] = None) -> dict:
+    active_weights = _resolve_scoring_weights(weights)
+    snapshot = get_stock_snapshot(symbol)
+    breakdown = _build_scoring_breakdown(snapshot, active_weights)
+
+    return {
+        "symbol": snapshot["symbol"],
+        "company": snapshot["name"],
+        "price": snapshot["price"],
+        "snapshot": snapshot,
+        "scoring_inputs": breakdown,
+        "scoring_weights": active_weights,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

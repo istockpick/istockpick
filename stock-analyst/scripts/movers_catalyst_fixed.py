@@ -6,10 +6,7 @@ Handles syntax errors, missing dependencies, and proper error handling
 
 import sys
 import json
-import pandas as pd
-from datetime import datetime, timedelta
-import pytz
-from typing import List, Dict
+from datetime import datetime, timezone
 
 def main():
     """Main function to process S&P 500 movers"""
@@ -32,7 +29,7 @@ def main():
         error_response = {
             "status": "error",
             "message": f"Script error: {str(e)}",
-            "timestamp": datetime.now(pytz.UTC).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         print(json.dumps(error_response, indent=2), file=sys.stderr)
         return 1

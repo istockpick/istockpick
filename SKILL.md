@@ -1,203 +1,154 @@
 ---
 name: stock-analyst-deploy
-description: Deploy and validate the stock-analyst Python project in a new environment. Use when setting up infrastructure, preparing runtime dependencies, configuring required environment variables, running pre-deploy smoke checks, and promoting code to a shared dev/staging/production target.
+description: Build, validate, and deploy the stock-analyst API in istockpick, including recommendation/scoring-data endpoints, verbose mode, and construction-server runtime wiring.
 ---
 
 # Stock Analyst Deploy Skill
 
-Prepare, validate, and deploy this repository with reproducible steps.
+Deploy and validate the current stock-analyst API implementation.
 
-## Gather Context
+## Repository Context
 
-1. Confirm repository root is `/Users/richliu/projects/public/stock-analyst`.
-2. Confirm target environment: `dev`, `staging`, or `prod`.
-3. Confirm Python version is `3.11+`.
-4. Confirm whether outbound internet is allowed for market/news fetches.
+1. Repository root is `/Users/richliu/projects/private/istockpick`.
+2. Analyzer package root is `/Users/richliu/projects/private/istockpick/stock-analyst`.
+3. Core analyzer/API modules:
+- `stock-analyst/stock_analyst/api.py`
+- `stock-analyst/stock_analyst/web_analyzer.py`
+4. Public runtime entrypoints may be:
+- `construction_server.py`
+- `construction_server_fixed.py`
 
-## Verify Repository Baseline Before Deploy
+## Expected Endpoints
 
-Confirm these expected files and interfaces exist before proceeding:
+For production domain (`api.istockpick.ai`), ensure these are live:
 
-1. Package exports in `stock_analyst/__init__.py`.
-- Must expose `TechnicalAnalyzer`, `FundamentalAnalyzer`, and `generate_full_analysis`.
+1. `GET /health`
+2. `POST /api/v1/agents/register`
+3. `GET|POST /api/v1/recommendation`
+4. `GET|POST /api/v1/scoring-data`
 
-2. API app in `stock_analyst/api.py`.
-- Must expose `app` (FastAPI instance) and serve:
-  - `/health`
-  - `/api/v1/agents/register`
-  - `/api/v1/recommendation`
+## Recommendation Response Modes
 
-3. Dependencies in `requirements.txt`.
-- Must include `fastapi`, `uvicorn`, and `pytz`.
+`/api/v1/recommendation` supports `verbose` (and legacy alias `verborse`).
 
-4. Local text DB path for agent credentials.
-- `data/agents_db.txt` is created/updated by the API.
+1. Default (`verbose=false` or omitted):
+- Action-only payload: `{"recommendation":"BUY|HOLD|SELL"}`
 
-## Configure Runtime Environment
+2. `verbose=true`:
+- Detailed payload with sub-sections:
+- `stock_analysis`
+- `sentiment_analysis`
+- `ai_recommendation`
+- `scoring_weights`
 
-1. Create virtual environment and install dependencies.
+## Scoring-Data Endpoint
+
+`/api/v1/scoring-data` returns:
+
+1. `price`
+2. `snapshot` (raw market data)
+3. `scoring_inputs` (raw scoring factors)
+4. `scoring_weights`
+5. metadata (`input`, `resolved_symbol`, `company`, `generated_at`)
+
+Supports optional weights override:
+
+1. GET: `weights` as JSON-encoded query string.
+2. POST: `weights` as JSON object body.
+
+## Setup
+
+Run from `/Users/richliu/projects/private/istockpick/stock-analyst`.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install fastapi uvicorn yfinance pydantic python-dotenv
 ```
 
-2. Create `.env` in repo root.
+Optional env for Alpaca provider:
 
 ```dotenv
-ALPACA_API_KEY=...
-ALPACA_SECRET_KEY=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-TWITTER_BEARER_TOKEN=...
-NEWS_API_KEY=...
+APCA_API_KEY_ID=...
+APCA_API_SECRET_KEY=...
+ALPACA_DATA_BASE_URL=https://data.alpaca.markets
 ```
-
-3. Keep secrets out of git.
-- Ensure `.env` is ignored before commit.
 
 ## Pre-Deploy Validation
 
-Run lightweight checks from repo root.
-
-1. Verify imports.
+1. Compile checks.
 
 ```bash
-python3 - <<'PY'
-from stock_analyst import TechnicalAnalyzer, FundamentalAnalyzer, generate_full_analysis
-print('imports_ok')
-PY
+python -m py_compile stock_analyst/api.py
+python -m py_compile stock_analyst/web_analyzer.py
+python -m py_compile /Users/richliu/projects/private/istockpick/construction_server.py
+python -m py_compile /Users/richliu/projects/private/istockpick/construction_server_fixed.py
 ```
 
-2. Verify basic analysis flow.
+2. Route checks for package app.
 
 ```bash
-python3 - <<'PY'
-from stock_analyst.web_analyzer import generate_full_analysis
-result = generate_full_analysis('AAPL')
-print('keys', sorted(result.keys()))
-print('symbol', result.get('symbol'))
-PY
-```
-
-3. Verify API import and route registration.
-
-```bash
-python3 - <<'PY'
+python - <<'PY'
 from stock_analyst.api import app
-paths = {route.path for route in app.routes}
-required = {"/health", "/api/v1/agents/register", "/api/v1/recommendation"}
+paths = {r.path for r in app.routes}
+required = {
+    "/health",
+    "/api/v1/agents/register",
+    "/api/v1/recommendation",
+    "/api/v1/recommendations",
+    "/api/v1/scoring-data",
+}
 print("api_routes_ok", required.issubset(paths))
 PY
 ```
 
-4. Verify scripts execute.
+## Runtime Notes
+
+1. If domain traffic is served by `construction_server.py` or `construction_server_fixed.py`, restart that process after changes.
+2. If traffic is served by FastAPI directly, run:
 
 ```bash
-python3 scripts/movers_catalyst_fixed.py
-printf '[]' | python3 scripts/process_tweets_fixed.py
-```
-
-5. Verify dependency integrity.
-
-```bash
-pip check
-```
-
-6. Smoke test API server endpoints.
-
-```bash
+cd /Users/richliu/projects/private/istockpick/stock-analyst
 uvicorn stock_analyst.api:app --host 0.0.0.0 --port 8000
 ```
 
-In another shell:
+## Smoke Tests
+
+1. Health.
 
 ```bash
-curl "https://api.istockpick.ai/health"
-curl -X POST "https://api.istockpick.ai/api/v1/agents/register" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"agent-alpha"}'
-curl "https://api.istockpick.ai/api/v1/recommendation?stock=AAPL&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN"
-curl -X POST "https://api.istockpick.ai/api/v1/recommendation" \
-  -H "Content-Type: application/json" \
-  -d '{"stock":"Apple Inc","agent_name":"agent-alpha","agent_token":"REPLACE_WITH_TOKEN"}'
+curl "http://api.istockpick.ai/health"
 ```
 
-## Deploy Procedure
+2. Recommendation default (action-only).
 
-Use the same flow for each target environment.
+```bash
+curl "http://api.istockpick.ai/api/v1/recommendation?stock=AAPL&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN"
+```
 
-1. Pull latest mainline code and lock commit SHA for traceability.
-2. Create clean virtual environment on target host/container.
-3. Install dependencies from `requirements.txt`.
-4. Inject secrets via environment variables or secret manager.
-5. Run pre-deploy validation commands on target runtime.
-6. Start runtime process that uses this package.
-- API mode: `uvicorn stock_analyst.api:app --host 0.0.0.0 --port 8000`
-- Worker/scheduler mode: run relevant scripts/jobs for your environment.
-7. Record deployed commit SHA, deploy time, and operator.
+3. Recommendation verbose.
 
-## Post-Deploy Health Checks
+```bash
+curl "http://api.istockpick.ai/api/v1/recommendation?stock=AAPL&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN&verbose=true"
+```
 
-1. Execute one live symbol analysis (`AAPL`) and verify non-error response shape.
-2. Hit API health endpoint and recommendation endpoint:
-- `GET /health`
-- `POST /api/v1/agents/register` with `{"name":"agent-alpha"}`
-- `GET /api/v1/recommendation` with `stock`, `agent_name`, and `agent_token`
-- `POST /api/v1/recommendation` with `stock`, `agent_name`, and `agent_token`
-3. Verify network calls to data providers succeed within expected latency.
-4. Confirm logs do not contain repeated exceptions for missing keys/data.
-5. Confirm `data/agents_db.txt` is created and includes registered agent entry.
-6. Confirm any scheduled jobs produce output and timestamps as expected.
+4. Scoring data.
 
-## Rollback Procedure
+```bash
+curl "http://api.istockpick.ai/api/v1/scoring-data?stock=AAPL&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN"
+```
 
-1. Keep previous known-good commit and requirements snapshot.
-2. Recreate virtual environment from known-good commit.
-3. Reapply previous secret configuration.
-4. Run the same validation and health checks.
-5. Switch traffic/jobs back to rolled-back instance.
+5. Scoring data with weights override.
 
-## Common Failure Modes
-
-1. `ModuleNotFoundError: pytz`.
-- Cause: missing dependency in environment.
-
-2. `HTTP 400` from recommendation endpoint.
-- Cause: stock input could not be resolved to a ticker.
-
-3. `HTTP 401` from recommendation endpoint.
-- Cause: missing/invalid `agent_name` or `agent_token`.
-
-4. `HTTP 409` from `/api/v1/agents/register`.
-- Cause: agent name is already registered.
-
-5. `HTTP 502` from recommendation endpoint.
-- Cause: upstream data fetch failed or recommendation generation error.
-
-6. Empty or partial market data.
-- Cause: provider/network issues or symbol not supported by source.
-
-7. Errors from API credentials.
-- Cause: missing/invalid `.env` values.
+```bash
+curl "http://api.istockpick.ai/api/v1/scoring-data?stock=AAPL&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN&weights=%7B%22trend_bullish%22%3A20%2C%22action_buy_threshold%22%3A70%7D"
+```
 
 ## Definition of Done
 
-Treat deployment as complete only when all are true:
-
-1. Dependencies install without error.
-2. Import smoke tests pass.
-3. API route checks pass and API health endpoint returns success.
-4. Agent registration endpoint returns a generated token for a new agent.
-5. Recommendation endpoint returns valid payload for at least one symbol using valid agent credentials.
-6. Required scripts run without runtime exceptions.
-7. Deploy metadata (commit SHA + timestamp) is recorded.
-
-## Download SKILL.md via curl
-
-Users can download the latest skill file directly from the website:
-
-```bash
-curl -L "https://api.istockpick.ai/SKILL.md" -o SKILL.md
-```
+1. Runtime is serving updated code path (no stale entrypoint mismatch).
+2. Recommendation endpoint honors `verbose` behavior.
+3. Scoring-data endpoint is reachable and returns price + raw scoring inputs.
+4. Authenticated calls succeed with registered agent credentials.
+5. Compile checks pass for analyzer API and construction server entrypoints.
