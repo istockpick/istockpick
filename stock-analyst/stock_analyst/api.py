@@ -205,21 +205,34 @@ def create_app() -> FastAPI:
         _validate_agent(agent_name, agent_token)
         weights_payload = _parse_weights_query(weights)
         verbose_flag = _resolve_verbose_flag(verbose=verbose, verborse=verborse)
-        return _build_recommendation_response(
+        effective_weights = _resolve_effective_weights(agent_name, agent_token, weights_payload)
+        response = _build_recommendation_response(
             stock,
-            weights_payload,
+            effective_weights,
             verbose=verbose_flag,
         )
+        if weights_payload is not None:
+            _save_agent_weights(agent_name, agent_token, weights_payload)
+        return response
 
     @app.post("/api/v1/recommendation")
     def post_recommendation(request: RecommendationRequest) -> dict:
         _validate_agent(request.agent_name, request.agent_token)
         verbose_flag = _resolve_verbose_flag(verbose=request.verbose, verborse=request.verborse)
-        return _build_recommendation_response(
+        requested_weights = _weights_to_payload(request.weights)
+        effective_weights = _resolve_effective_weights(
+            request.agent_name,
+            request.agent_token,
+            requested_weights,
+        )
+        response = _build_recommendation_response(
             request.stock,
-            _weights_to_payload(request.weights),
+            effective_weights,
             verbose=verbose_flag,
         )
+        if requested_weights is not None:
+            _save_agent_weights(request.agent_name, request.agent_token, requested_weights)
+        return response
 
     @app.get("/api/v1/recommendations")
     def get_recommendations(
@@ -243,21 +256,34 @@ def create_app() -> FastAPI:
         parsed_stocks = _parse_batch_stocks(stocks)
         weights_payload = _parse_weights_query(weights)
         verbose_flag = _resolve_verbose_flag(verbose=verbose, verborse=verborse)
-        return _build_batch_recommendation_response(
+        effective_weights = _resolve_effective_weights(agent_name, agent_token, weights_payload)
+        response = _build_batch_recommendation_response(
             parsed_stocks,
-            weights_payload,
+            effective_weights,
             verbose=verbose_flag,
         )
+        if weights_payload is not None:
+            _save_agent_weights(agent_name, agent_token, weights_payload)
+        return response
 
     @app.post("/api/v1/recommendations")
     def post_recommendations(request: BatchRecommendationRequest) -> dict:
         _validate_agent(request.agent_name, request.agent_token)
         verbose_flag = _resolve_verbose_flag(verbose=request.verbose, verborse=request.verborse)
-        return _build_batch_recommendation_response(
+        requested_weights = _weights_to_payload(request.weights)
+        effective_weights = _resolve_effective_weights(
+            request.agent_name,
+            request.agent_token,
+            requested_weights,
+        )
+        response = _build_batch_recommendation_response(
             request.stocks,
-            _weights_to_payload(request.weights),
+            effective_weights,
             verbose=verbose_flag,
         )
+        if requested_weights is not None:
+            _save_agent_weights(request.agent_name, request.agent_token, requested_weights)
+        return response
 
     @app.get("/api/v1/scoring-data")
     def get_scoring_data(
@@ -271,15 +297,28 @@ def create_app() -> FastAPI:
     ) -> dict:
         _validate_agent(agent_name, agent_token)
         weights_payload = _parse_weights_query(weights)
-        return _build_scoring_data_response(stock, weights_payload)
+        effective_weights = _resolve_effective_weights(agent_name, agent_token, weights_payload)
+        response = _build_scoring_data_response(stock, effective_weights)
+        if weights_payload is not None:
+            _save_agent_weights(agent_name, agent_token, weights_payload)
+        return response
 
     @app.post("/api/v1/scoring-data")
     def post_scoring_data(request: ScoringDataRequest) -> dict:
         _validate_agent(request.agent_name, request.agent_token)
-        return _build_scoring_data_response(
-            request.stock,
-            _weights_to_payload(request.weights),
+        requested_weights = _weights_to_payload(request.weights)
+        effective_weights = _resolve_effective_weights(
+            request.agent_name,
+            request.agent_token,
+            requested_weights,
         )
+        response = _build_scoring_data_response(
+            request.stock,
+            effective_weights,
+        )
+        if requested_weights is not None:
+            _save_agent_weights(request.agent_name, request.agent_token, requested_weights)
+        return response
 
     return app
 
@@ -289,8 +328,20 @@ def _db_path() -> Path:
     return root / "data" / "agents_db.txt"
 
 
+def _weights_db_path() -> Path:
+    root = Path(__file__).resolve().parent.parent
+    return root / "data" / "weights.txt"
+
+
 def _ensure_db_exists() -> None:
     db_path = _db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if not db_path.exists():
+        db_path.write_text('{"agents": {}}', encoding="utf-8")
+
+
+def _ensure_weights_db_exists() -> None:
+    db_path = _weights_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     if not db_path.exists():
         db_path.write_text('{"agents": {}}', encoding="utf-8")
@@ -319,6 +370,90 @@ def _save_agents(agents: Dict[str, Dict[str, str]]) -> None:
     tmp_path = db_path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp_path.replace(db_path)
+
+
+def _load_weights_agents() -> Dict[str, Dict[str, object]]:
+    _ensure_weights_db_exists()
+    raw = _weights_db_path().read_text(encoding="utf-8").strip()
+    if not raw:
+        return {}
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"Weights DB is corrupted: {exc}") from exc
+
+    agents = payload.get("agents", {})
+    if not isinstance(agents, dict):
+        raise HTTPException(status_code=500, detail="Weights DB has invalid format")
+    return agents
+
+
+def _save_weights_agents(agents: Dict[str, Dict[str, object]]) -> None:
+    db_path = _weights_db_path()
+    payload = {"agents": agents}
+    tmp_path = db_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(db_path)
+
+
+def _sanitize_weights(weights: object) -> Optional[dict]:
+    if not isinstance(weights, dict):
+        return None
+    try:
+        parsed = ScoringWeights(**weights)
+    except ValidationError:
+        return None
+    try:
+        return _weights_to_payload(parsed)
+    except HTTPException:
+        return None
+
+
+def _get_saved_agent_weights(agent_name: str, agent_token: str) -> Optional[dict]:
+    cleaned_name = agent_name.strip()
+    cleaned_token = agent_token.strip()
+    if not cleaned_name or not cleaned_token:
+        return None
+
+    with _DB_LOCK:
+        agents = _load_weights_agents()
+        record = agents.get(cleaned_name)
+
+    if not isinstance(record, dict):
+        return None
+    expected_token = str(record.get("agent_token", ""))
+    if not expected_token or not secrets.compare_digest(expected_token, cleaned_token):
+        return None
+    return _sanitize_weights(record.get("weights"))
+
+
+def _save_agent_weights(agent_name: str, agent_token: str, weights: dict) -> None:
+    cleaned_name = agent_name.strip()
+    cleaned_token = agent_token.strip()
+    sanitized = _sanitize_weights(weights)
+    if not cleaned_name or not cleaned_token or sanitized is None:
+        return
+
+    with _DB_LOCK:
+        agents = _load_weights_agents()
+        agents[cleaned_name] = {
+            "agent_name": cleaned_name,
+            "agent_token": cleaned_token,
+            "weights": sanitized,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _save_weights_agents(agents)
+
+
+def _resolve_effective_weights(
+    agent_name: str,
+    agent_token: str,
+    requested_weights: Optional[dict],
+) -> Optional[dict]:
+    if requested_weights is not None:
+        return requested_weights
+    return _get_saved_agent_weights(agent_name, agent_token)
 
 
 def _generate_unique_token(agents: Dict[str, Dict[str, str]]) -> str:
