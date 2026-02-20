@@ -32,6 +32,38 @@ ANALYSIS_RUNTIME_PYTHON = os.getenv(
     "/tmp/stock-analyst-venv/bin/python3",
 )
 
+SCORING_WEIGHT_DEFAULTS = {
+    "base_score": 50.0,
+    "trend_bullish": 15.0,
+    "trend_bearish": 15.0,
+    "high_volume_bonus": 8.0,
+    "ma_bullish_bonus": 7.0,
+    "ma_bearish_penalty": 7.0,
+    "price_above_ma_bonus": 5.0,
+    "price_below_ma_penalty": 5.0,
+    "volume_ratio_threshold": 1.5,
+    "sentiment_buy_threshold": 65.0,
+    "sentiment_sell_threshold": 35.0,
+    "action_buy_threshold": 65.0,
+    "action_sell_threshold": 35.0,
+}
+
+SCORING_WEIGHT_LIMITS = {
+    "base_score": (0.0, 100.0),
+    "trend_bullish": (0.0, 100.0),
+    "trend_bearish": (0.0, 100.0),
+    "high_volume_bonus": (0.0, 100.0),
+    "ma_bullish_bonus": (0.0, 100.0),
+    "ma_bearish_penalty": (0.0, 100.0),
+    "price_above_ma_bonus": (0.0, 100.0),
+    "price_below_ma_penalty": (0.0, 100.0),
+    "volume_ratio_threshold": (0.1, 10.0),
+    "sentiment_buy_threshold": (0.0, 100.0),
+    "sentiment_sell_threshold": (0.0, 100.0),
+    "action_buy_threshold": (0.0, 100.0),
+    "action_sell_threshold": (0.0, 100.0),
+}
+
 for p in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
     if os.path.isdir(p) and p not in sys.path:
         sys.path.insert(0, p)
@@ -142,6 +174,8 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.serve_health_check()
         elif parsed_path.path == '/api/v1/recommendation':
             self.serve_api_recommendation_get(query)
+        elif parsed_path.path == '/api/v1/weights':
+            self.serve_api_weights()
         elif parsed_path.path == '/api/v1/scoring-data':
             self.serve_api_scoring_data_get(query)
         elif parsed_path.path == '/status':
@@ -435,6 +469,31 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         if payload is None:
             return
         self._register_agent(payload.get("name", ""))
+
+    def serve_api_weights(self):
+        weights = []
+        for key, default_value in SCORING_WEIGHT_DEFAULTS.items():
+            lo, hi = SCORING_WEIGHT_LIMITS.get(key, (None, None))
+            weights.append(
+                {
+                    "key": key,
+                    "default": default_value,
+                    "min": lo,
+                    "max": hi,
+                }
+            )
+
+        self.send_json(
+            200,
+            {
+                "count": len(weights),
+                "weights": weights,
+                "rules": {
+                    "sentiment_sell_threshold": "must be less than sentiment_buy_threshold",
+                    "action_sell_threshold": "must be less than action_buy_threshold",
+                },
+            },
+        )
 
     def serve_api_recommendation_get(self, query):
         stock = query.get("stock", [""])[0]

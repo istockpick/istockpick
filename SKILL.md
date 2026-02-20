@@ -15,6 +15,7 @@ For production domain (`api.istockpick.ai`), ensure these are live:
 2. `POST /api/v1/agents/register`
 3. `GET|POST /api/v1/recommendation`
 4. `GET|POST /api/v1/scoring-data`
+5. `GET /api/v1/weights`
 
 ## Recommendation Response Modes
 
@@ -44,6 +45,16 @@ Supports optional weights override:
 
 1. GET: `weights` as JSON-encoded query string.
 2. POST: `weights` as JSON object body.
+
+## Weights Discovery + Persistence
+
+1. `GET /api/v1/weights` returns all modifiable keys with default/min/max and threshold rules.
+2. Per-agent weight persistence is stored in:
+- `stock-analyst/data/weights.txt`
+3. Recommendation/scoring calls use weights in this order:
+- Request `weights` override (if provided), and persist it for the agent.
+- Saved agent weights from `stock-analyst/data/weights.txt`.
+- Hardcoded defaults.
 
 ## Setup
 
@@ -87,6 +98,7 @@ required = {
     "/api/v1/recommendation",
     "/api/v1/recommendations",
     "/api/v1/scoring-data",
+    "/api/v1/weights",
 }
 print("api_routes_ok", required.issubset(paths))
 PY
@@ -134,6 +146,12 @@ curl "http://api.istockpick.ai/api/v1/scoring-data?stock=AAPL&agent_name=agent-a
 curl "http://api.istockpick.ai/api/v1/scoring-data?stock=AAPL&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN&weights=%7B%22trend_bullish%22%3A20%2C%22action_buy_threshold%22%3A70%7D"
 ```
 
+6. Weights metadata endpoint.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/weights"
+```
+
 ## Sample Scripts
 
 Run from `stock-analyst/`.
@@ -155,5 +173,6 @@ python3 samples/istockpick_reco_scan.py
 1. Runtime is serving updated code path (no stale entrypoint mismatch).
 2. Recommendation endpoint honors `verbose` behavior.
 3. Scoring-data endpoint is reachable and returns price + raw scoring inputs.
-4. Authenticated calls succeed with registered agent credentials.
-5. Compile checks pass for analyzer API and construction server entrypoints.
+4. `/api/v1/weights` returns all modifiable keys + ranges.
+5. Authenticated calls succeed with registered agent credentials.
+6. Compile checks pass for analyzer API and construction server entrypoints.
