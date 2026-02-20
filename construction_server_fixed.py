@@ -118,6 +118,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     SEC_TICKERS_CACHE = None
     SEC_TICKERS_CACHE_LOCK = threading.Lock()
     AGENTS_DB_LOCK = threading.Lock()
+    WEIGHTS_DB_LOCK = threading.Lock()
     MAX_PROXY_BODY_BYTES = 1_000_000
     MAX_LOOKUP_QUERY_LEN = 120
     STOCK_QUERY_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
@@ -202,6 +203,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 return os.path.join(root, "data", "agents_db.txt")
         return os.path.join(LEGACY_STOCK_ANALYST_PATH, "data", "agents_db.txt")
 
+    def _weights_db_path(self):
+        return os.path.join(os.path.dirname(__file__), "stock-analyst", "data", "weights.txt")
+
     def _load_agents(self):
         db_path = self._agents_db_path()
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -230,6 +234,72 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(payload, indent=2))
         os.replace(tmp_path, db_path)
+
+    def _load_weights_db(self):
+        db_path = self._weights_db_path()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        if not os.path.exists(db_path):
+            with open(db_path, "w", encoding="utf-8") as f:
+                f.write('{"agents": {}}')
+
+        with open(db_path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError("Weights DB is corrupted")
+        agents = payload.get("agents", {})
+        if not isinstance(agents, dict):
+            raise ValueError("Weights DB has invalid format")
+        return agents
+
+    def _save_weights_db(self, agents):
+        db_path = self._weights_db_path()
+        payload = {"agents": agents}
+        tmp_path = f"{db_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, indent=2))
+        os.replace(tmp_path, db_path)
+
+    def _get_saved_weights(self, agent_name, agent_token):
+        with ConstructionHandler.WEIGHTS_DB_LOCK:
+            try:
+                agents = self._load_weights_db()
+            except ValueError:
+                return None
+            record = agents.get((agent_name or "").strip())
+            if not isinstance(record, dict):
+                return None
+            expected_token = str(record.get("agent_token", ""))
+            if not expected_token or not secrets.compare_digest(expected_token, (agent_token or "").strip()):
+                return None
+            weights = record.get("weights")
+            return weights if isinstance(weights, dict) else None
+
+    def _save_agent_weights(self, agent_name, agent_token, weights):
+        if not isinstance(weights, dict):
+            return
+        cleaned_name = (agent_name or "").strip()
+        cleaned_token = (agent_token or "").strip()
+        if not cleaned_name or not cleaned_token:
+            return
+
+        with ConstructionHandler.WEIGHTS_DB_LOCK:
+            try:
+                agents = self._load_weights_db()
+            except ValueError:
+                agents = {}
+
+            agents[cleaned_name] = {
+                "agent_name": cleaned_name,
+                "agent_token": cleaned_token,
+                "weights": weights,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            self._save_weights_db(agents)
 
     def _register_agent(self, name):
         cleaned_name = (name or "").strip()
@@ -295,7 +365,15 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return False
         return True
 
-    def _build_recommendation_response(self, stock, verbose=False):
+    def _build_recommendation_response(
+        self,
+        stock,
+        weights=None,
+        verbose=False,
+        agent_name=None,
+        agent_token=None,
+        persist_weights=False,
+    ):
         stock = (stock or "").strip()
         if not stock:
             self.send_json(400, {"error": "Stock input is required"})
@@ -318,7 +396,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         try:
-            analysis = generate_full_analysis(resolved_symbol)
+            analysis = generate_full_analysis(resolved_symbol, weights=weights)
         except Exception:
             self.send_json(502, {"error": f"Failed to generate recommendation for {resolved_symbol}"})
             return
@@ -330,6 +408,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         if not action:
             self.send_json(502, {"error": f"Recommendation action unavailable for {resolved_symbol}"})
             return
+
+        if persist_weights:
+            self._save_agent_weights(agent_name, agent_token, weights)
 
         if not verbose:
             self.send_json(200, {"recommendation": action})
@@ -359,13 +440,26 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         stock = query.get("stock", [""])[0]
         agent_name = query.get("agent_name", [""])[0]
         agent_token = query.get("agent_token", [""])[0]
+        raw_weights = query.get("weights", [""])[0]
+        requested_weights = _parse_weights_payload(raw_weights)
+        if raw_weights not in ("", None) and requested_weights is None:
+            self.send_json(400, {"error": "Invalid weights payload. Expected a JSON object."})
+            return
         verbose = _parse_bool(query.get("verbose", [""])[0], default=False)
         if "verborse" in query:
             verbose = _parse_bool(query.get("verborse", [""])[0], default=verbose)
 
         if not self._validate_agent(agent_name, agent_token):
             return
-        self._build_recommendation_response(stock, verbose=verbose)
+        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        self._build_recommendation_response(
+            stock,
+            weights=weights,
+            verbose=verbose,
+            agent_name=agent_name,
+            agent_token=agent_token,
+            persist_weights=requested_weights is not None,
+        )
 
     def serve_api_recommendation_post(self):
         payload = self._read_json_body()
@@ -374,12 +468,33 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         if not self._validate_agent(payload.get("agent_name", ""), payload.get("agent_token", "")):
             return
+        requested_weights = _parse_weights_payload(payload.get("weights"))
+        if "weights" in payload and requested_weights is None:
+            self.send_json(400, {"error": "Invalid weights payload. Expected a JSON object."})
+            return
         verbose = _parse_bool(payload.get("verbose"), default=False)
         if "verborse" in payload:
             verbose = _parse_bool(payload.get("verborse"), default=verbose)
-        self._build_recommendation_response(payload.get("stock", ""), verbose=verbose)
+        agent_name = payload.get("agent_name", "")
+        agent_token = payload.get("agent_token", "")
+        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        self._build_recommendation_response(
+            payload.get("stock", ""),
+            weights=weights,
+            verbose=verbose,
+            agent_name=agent_name,
+            agent_token=agent_token,
+            persist_weights=requested_weights is not None,
+        )
 
-    def _build_scoring_data_response(self, stock, weights=None):
+    def _build_scoring_data_response(
+        self,
+        stock,
+        weights=None,
+        agent_name=None,
+        agent_token=None,
+        persist_weights=False,
+    ):
         stock = (stock or "").strip()
         if not stock:
             self.send_json(400, {"error": "Stock input is required"})
@@ -411,6 +526,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(502, {"error": f"Failed to load scoring data for {resolved_symbol}"})
             return
 
+        if persist_weights:
+            self._save_agent_weights(agent_name, agent_token, weights)
+
         self.send_json(
             200,
             {
@@ -429,11 +547,22 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         stock = query.get("stock", [""])[0]
         agent_name = query.get("agent_name", [""])[0]
         agent_token = query.get("agent_token", [""])[0]
-        weights = _parse_weights_payload(query.get("weights", [""])[0])
+        raw_weights = query.get("weights", [""])[0]
+        requested_weights = _parse_weights_payload(raw_weights)
+        if raw_weights not in ("", None) and requested_weights is None:
+            self.send_json(400, {"error": "Invalid weights payload. Expected a JSON object."})
+            return
 
         if not self._validate_agent(agent_name, agent_token):
             return
-        self._build_scoring_data_response(stock, weights=weights)
+        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        self._build_scoring_data_response(
+            stock,
+            weights=weights,
+            agent_name=agent_name,
+            agent_token=agent_token,
+            persist_weights=requested_weights is not None,
+        )
 
     def serve_api_scoring_data_post(self):
         payload = self._read_json_body()
@@ -442,8 +571,20 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         if not self._validate_agent(payload.get("agent_name", ""), payload.get("agent_token", "")):
             return
-        weights = _parse_weights_payload(payload.get("weights"))
-        self._build_scoring_data_response(payload.get("stock", ""), weights=weights)
+        requested_weights = _parse_weights_payload(payload.get("weights"))
+        if "weights" in payload and requested_weights is None:
+            self.send_json(400, {"error": "Invalid weights payload. Expected a JSON object."})
+            return
+        agent_name = payload.get("agent_name", "")
+        agent_token = payload.get("agent_token", "")
+        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        self._build_scoring_data_response(
+            payload.get("stock", ""),
+            weights=weights,
+            agent_name=agent_name,
+            agent_token=agent_token,
+            persist_weights=requested_weights is not None,
+        )
     
     def serve_construction_page(self):
         """Serve the in construction page"""

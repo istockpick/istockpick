@@ -7,17 +7,6 @@ description: Build, validate, and deploy the stock-analyst API in istockpick, in
 
 Deploy and validate the current stock-analyst API implementation.
 
-## Repository Context
-
-1. Repository root is `/Users/richliu/projects/private/istockpick`.
-2. Analyzer package root is `/Users/richliu/projects/private/istockpick/stock-analyst`.
-3. Core analyzer/API modules:
-- `stock-analyst/stock_analyst/api.py`
-- `stock-analyst/stock_analyst/web_analyzer.py`
-4. Public runtime entrypoints may be:
-- `construction_server.py`
-- `construction_server_fixed.py`
-
 ## Expected Endpoints
 
 For production domain (`api.istockpick.ai`), ensure these are live:
@@ -58,7 +47,7 @@ Supports optional weights override:
 
 ## Setup
 
-Run from `/Users/richliu/projects/private/istockpick/stock-analyst`.
+Run from `stock-analyst/`.
 
 ```bash
 python3 -m venv .venv
@@ -82,8 +71,8 @@ ALPACA_DATA_BASE_URL=https://data.alpaca.markets
 ```bash
 python -m py_compile stock_analyst/api.py
 python -m py_compile stock_analyst/web_analyzer.py
-python -m py_compile /Users/richliu/projects/private/istockpick/construction_server.py
-python -m py_compile /Users/richliu/projects/private/istockpick/construction_server_fixed.py
+python -m py_compile ../construction_server.py
+python -m py_compile ../construction_server_fixed.py
 ```
 
 2. Route checks for package app.
@@ -109,7 +98,7 @@ PY
 2. If traffic is served by FastAPI directly, run:
 
 ```bash
-cd /Users/richliu/projects/private/istockpick/stock-analyst
+cd stock-analyst
 uvicorn stock_analyst.api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -143,6 +132,22 @@ curl "http://api.istockpick.ai/api/v1/scoring-data?stock=AAPL&agent_name=agent-a
 
 ```bash
 curl "http://api.istockpick.ai/api/v1/scoring-data?stock=AAPL&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN&weights=%7B%22trend_bullish%22%3A20%2C%22action_buy_threshold%22%3A70%7D"
+```
+
+## Sample Scripts
+
+Run from `stock-analyst/`.
+
+1. Detail call sample.
+
+```bash
+python3 samples/istockpick_reco_detail.py
+```
+
+2. Multi-symbol scan sample.
+
+```bash
+python3 samples/istockpick_reco_scan.py
 ```
 
 ## Definition of Done
