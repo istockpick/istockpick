@@ -151,6 +151,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     SEC_TICKERS_CACHE_LOCK = threading.Lock()
     AGENTS_DB_LOCK = threading.Lock()
     WEIGHTS_DB_LOCK = threading.Lock()
+    PORTFOLIO_DB_LOCK = threading.Lock()
     MAX_PROXY_BODY_BYTES = 1_000_000
     MAX_LOOKUP_QUERY_LEN = 120
     STOCK_QUERY_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
@@ -180,6 +181,8 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.serve_api_weights()
         elif parsed_path.path == '/api/v1/model-leaderboard':
             self.serve_api_model_leaderboard()
+        elif parsed_path.path == '/api/v1/portfolio':
+            self.serve_api_portfolio_get(query)
         elif parsed_path.path == '/api/v1/scoring-data':
             self.serve_api_scoring_data_get(query)
         elif parsed_path.path == '/status':
@@ -206,6 +209,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
         if parsed_path.path == '/api/v1/scoring-data':
             self.serve_api_scoring_data_post()
+            return
+        if parsed_path.path == '/api/v1/portfolio':
+            self.serve_api_portfolio_post()
             return
 
         self.send_json(404, {"error": "Unknown endpoint."})
@@ -325,6 +331,39 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         if not isinstance(agents, dict):
             raise ValueError("Portfolio DB has invalid format")
         return agents
+
+    def _save_portfolio_db(self, agents):
+        db_path = self._portfolio_db_path()
+        payload = {"agents": agents}
+        tmp_path = f"{db_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, indent=2))
+        os.replace(tmp_path, db_path)
+
+    def _normalize_positions(self, positions):
+        if not isinstance(positions, list):
+            return None
+        normalized = []
+        for item in positions:
+            if not isinstance(item, dict):
+                return None
+            symbol = str(item.get("symbol", "")).strip().upper()
+            recommendation = str(item.get("recommendation", "")).strip().upper()
+            if not symbol or not self.STOCK_QUERY_PATTERN.fullmatch(symbol):
+                return None
+            if recommendation not in {"BUY", "SELL", "HOLD"}:
+                return None
+            normalized.append({"symbol": symbol, "recommendation": recommendation})
+        return normalized
+
+    def _extract_portfolio_payload(self, payload):
+        if not isinstance(payload, dict):
+            return None
+        if "positions" in payload:
+            return self._normalize_positions(payload.get("positions"))
+        if "stock_recommendations" in payload:
+            return self._normalize_positions(payload.get("stock_recommendations"))
+        return None
 
     def _normalize_model_name(self, raw_model_name):
         model_name = (raw_model_name or "").strip()
@@ -743,6 +782,150 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             },
         )
 
+    def serve_api_portfolio_get(self, query):
+        agent_name = (query.get("agent_name", [""])[0] or "").strip()
+        raw_model_name = query.get("model_name", [""])[0]
+        model_name = self._normalize_model_name(raw_model_name) if raw_model_name else None
+
+        if not agent_name:
+            self.send_json(400, {"error": "agent_name is required"})
+            return
+        if raw_model_name and model_name is None:
+            self.send_json(400, {"error": "Invalid model_name format"})
+            return
+        if not model_name:
+            self.send_json(400, {"error": "model_name is required"})
+            return
+
+        with ConstructionHandler.PORTFOLIO_DB_LOCK:
+            try:
+                agents = self._load_portfolio_db()
+            except ValueError:
+                self.send_json(500, {"error": "Portfolio database unavailable"})
+                return
+
+            agent_block = agents.get(agent_name)
+            if not isinstance(agent_block, dict):
+                self.send_json(404, {"error": "Portfolio not found for agent/model"})
+                return
+            models = agent_block.get("models", {})
+            if not isinstance(models, dict):
+                self.send_json(404, {"error": "Portfolio not found for agent/model"})
+                return
+            model_block = models.get(model_name)
+            if not isinstance(model_block, dict):
+                self.send_json(404, {"error": "Portfolio not found for agent/model"})
+                return
+
+            positions = self._normalize_positions(model_block.get("positions", []))
+            if positions is None:
+                positions = []
+
+            response = {
+                "agent_name": agent_name,
+                "model_name": model_name,
+                "portfolio_name": self._portfolio_name_for_model(model_name, model_block),
+                "positions": positions,
+                "daily_change_pct": self._safe_percent_value(model_block.get("daily_change_pct")),
+                "weekly_change_pct": self._safe_percent_value(model_block.get("weekly_change_pct")),
+                "monthly_change_pct": self._safe_percent_value(model_block.get("monthly_change_pct")),
+                "daily_change_delta": int(round(self._safe_percent_value(model_block.get("daily_change_delta", 0)))),
+                "weekly_change_delta": int(round(self._safe_percent_value(model_block.get("weekly_change_delta", 0)))),
+                "monthly_change_delta": int(round(self._safe_percent_value(model_block.get("monthly_change_delta", 0)))),
+                "updated_at": model_block.get("updated_at"),
+            }
+
+        self.send_json(200, response)
+
+    def serve_api_portfolio_post(self):
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        agent_name = (payload.get("agent_name", "") or "").strip()
+        agent_token = (payload.get("agent_token", "") or "").strip()
+        raw_model_name = payload.get("model_name", "")
+        model_name = self._normalize_model_name(raw_model_name) if raw_model_name else None
+
+        if not self._validate_agent(agent_name, agent_token):
+            return
+        if raw_model_name and model_name is None:
+            self.send_json(400, {"error": "Invalid model_name format"})
+            return
+        if not model_name:
+            self.send_json(400, {"error": "model_name is required"})
+            return
+
+        positions = self._extract_portfolio_payload(payload)
+        if positions is None:
+            self.send_json(
+                400,
+                {"error": "positions (or stock_recommendations) list is required and must contain symbol + BUY/SELL/HOLD"},
+            )
+            return
+
+        portfolio_name = str(payload.get("portfolio_name", "")).strip()
+        daily_change_pct = self._safe_percent_value(payload.get("daily_change_pct"))
+        weekly_change_pct = self._safe_percent_value(payload.get("weekly_change_pct"))
+        monthly_change_pct = self._safe_percent_value(payload.get("monthly_change_pct"))
+        daily_change_delta = int(round(self._safe_percent_value(payload.get("daily_change_delta"))))
+        weekly_change_delta = int(round(self._safe_percent_value(payload.get("weekly_change_delta"))))
+        monthly_change_delta = int(round(self._safe_percent_value(payload.get("monthly_change_delta"))))
+
+        with ConstructionHandler.PORTFOLIO_DB_LOCK:
+            try:
+                agents = self._load_portfolio_db()
+            except ValueError:
+                agents = {}
+
+            agent_block = agents.get(agent_name)
+            if not isinstance(agent_block, dict):
+                agent_block = {"agent_name": agent_name, "models": {}}
+
+            models = agent_block.get("models")
+            if not isinstance(models, dict):
+                models = {}
+
+            existing = models.get(model_name) if isinstance(models.get(model_name), dict) else {}
+            saved_portfolio_name = portfolio_name or str(existing.get("portfolio_name", "")).strip()
+            if not saved_portfolio_name:
+                saved_portfolio_name = self._portfolio_name_for_model(model_name, existing)
+
+            models[model_name] = {
+                "portfolio_name": saved_portfolio_name,
+                "positions": positions,
+                "daily_change_pct": daily_change_pct if "daily_change_pct" in payload else self._safe_percent_value(existing.get("daily_change_pct")),
+                "weekly_change_pct": weekly_change_pct if "weekly_change_pct" in payload else self._safe_percent_value(existing.get("weekly_change_pct")),
+                "monthly_change_pct": monthly_change_pct if "monthly_change_pct" in payload else self._safe_percent_value(existing.get("monthly_change_pct")),
+                "daily_change_delta": daily_change_delta if "daily_change_delta" in payload else int(round(self._safe_percent_value(existing.get("daily_change_delta", 0)))),
+                "weekly_change_delta": weekly_change_delta if "weekly_change_delta" in payload else int(round(self._safe_percent_value(existing.get("weekly_change_delta", 0)))),
+                "monthly_change_delta": monthly_change_delta if "monthly_change_delta" in payload else int(round(self._safe_percent_value(existing.get("monthly_change_delta", 0)))),
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            agent_block["agent_name"] = agent_name
+            agent_block["models"] = models
+            agents[agent_name] = agent_block
+            self._save_portfolio_db(agents)
+
+            saved = models[model_name]
+
+        self.send_json(
+            200,
+            {
+                "agent_name": agent_name,
+                "model_name": model_name,
+                "portfolio_name": saved.get("portfolio_name"),
+                "positions": saved.get("positions", []),
+                "daily_change_pct": saved.get("daily_change_pct", 0.0),
+                "weekly_change_pct": saved.get("weekly_change_pct", 0.0),
+                "monthly_change_pct": saved.get("monthly_change_pct", 0.0),
+                "daily_change_delta": saved.get("daily_change_delta", 0),
+                "weekly_change_delta": saved.get("weekly_change_delta", 0),
+                "monthly_change_delta": saved.get("monthly_change_delta", 0),
+                "updated_at": saved.get("updated_at"),
+            },
+        )
+
     def serve_api_recommendation_get(self, query):
         stock = query.get("stock", [""])[0]
         agent_name = query.get("agent_name", [""])[0]
@@ -1148,6 +1331,59 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             opacity: 0.78;
         }}
 
+        .portfolio-hover-target {{
+            cursor: pointer;
+            text-decoration: underline dotted rgba(255, 255, 255, 0.55);
+            text-underline-offset: 2px;
+        }}
+
+        .portfolio-hover-card {{
+            position: fixed;
+            z-index: 9999;
+            min-width: 220px;
+            max-width: 300px;
+            background: #0f1a2b;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 0.65rem 0.7rem;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+            font-size: 0.82rem;
+            text-align: left;
+            pointer-events: none;
+            display: none;
+        }}
+
+        .portfolio-hover-title {{
+            font-weight: 600;
+            margin-bottom: 0.35rem;
+        }}
+
+        .portfolio-hover-row {{
+            display: flex;
+            justify-content: space-between;
+            gap: 0.6rem;
+            padding: 0.14rem 0;
+        }}
+
+        .reco-buy {{
+            color: #65f9a8;
+            font-weight: 600;
+        }}
+
+        .reco-sell {{
+            color: #ff8b8b;
+            font-weight: 600;
+        }}
+
+        .reco-hold {{
+            color: #e6e6e6;
+            font-weight: 600;
+        }}
+
+        .portfolio-empty {{
+            opacity: 0.85;
+        }}
+
         .pct-pos {{
             color: #65f9a8;
             font-weight: 600;
@@ -1305,6 +1541,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             <p>Powered by 🦞 • Built with ❤️ in California</p>
         </div>
     </div>
+    <div id="portfolioHoverCard" class="portfolio-hover-card"></div>
 
     <script>
         const lookupForm = document.getElementById('lookupForm');
@@ -1316,6 +1553,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         const analysisMeta = document.getElementById('analysisMeta');
         const leaderboardBody = document.getElementById('leaderboardBody');
         const leaderboardMeta = document.getElementById('leaderboardMeta');
+        const portfolioHoverCard = document.getElementById('portfolioHoverCard');
 
         const fmtPct = (value) => {{
             const n = Number(value);
@@ -1354,6 +1592,67 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return `<span${{pctAttr}}>${{fmtPct(pct)}}</span>(<span class=\"${{deltaClass}}\">${{fmtDelta(delta)}}</span>)`;
         }};
 
+        const escapeHtml = (value) => {{
+            return String(value ?? '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('\"', '&quot;')
+                .replaceAll(\"'\", '&#39;');
+        }};
+
+        const positionsHtml = (positions) => {{
+            if (!Array.isArray(positions) || !positions.length) {{
+                return '<div class=\"portfolio-empty\">No holdings.</div>';
+            }}
+            return positions.map((position) => {{
+                const symbol = escapeHtml(position?.symbol || '');
+                const reco = String(position?.recommendation || 'HOLD').toUpperCase();
+                let recoClass = 'reco-hold';
+                if (reco === 'BUY') recoClass = 'reco-buy';
+                if (reco === 'SELL') recoClass = 'reco-sell';
+                return `<div class=\"portfolio-hover-row\"><span>${{symbol}}</span><span class=\"${{recoClass}}\">${{escapeHtml(reco)}}</span></div>`;
+            }}).join('');
+        }};
+
+        const placeHoverCard = (event) => {{
+            const gap = 12;
+            const margin = 8;
+            let left = event.clientX + gap;
+            let top = event.clientY + gap;
+            const rect = portfolioHoverCard.getBoundingClientRect();
+            if (left + rect.width > window.innerWidth - margin) {{
+                left = event.clientX - rect.width - gap;
+            }}
+            if (top + rect.height > window.innerHeight - margin) {{
+                top = event.clientY - rect.height - gap;
+            }}
+            portfolioHoverCard.style.left = `${{Math.max(margin, left)}}px`;
+            portfolioHoverCard.style.top = `${{Math.max(margin, top)}}px`;
+        }};
+
+        const bindPortfolioHover = (rows) => {{
+            const nodes = document.querySelectorAll('.portfolio-hover-target');
+            nodes.forEach((node) => {{
+                const rowIdx = Number(node.getAttribute('data-row-index'));
+                node.addEventListener('mouseenter', (event) => {{
+                    const row = rows[rowIdx] || {{}};
+                    const title = escapeHtml(row.portfolio_name || 'Portfolio');
+                    portfolioHoverCard.innerHTML = `<div class=\"portfolio-hover-title\">${{title}}</div>${{positionsHtml(row.positions)}}`;
+                    portfolioHoverCard.style.display = 'block';
+                    placeHoverCard(event);
+                }});
+                node.addEventListener('mousemove', (event) => {{
+                    if (portfolioHoverCard.style.display === 'block') {{
+                        placeHoverCard(event);
+                    }}
+                }});
+                node.addEventListener('mouseleave', () => {{
+                    portfolioHoverCard.style.display = 'none';
+                }});
+            }});
+        }};
+
         async function loadLeaderboard() {{
             leaderboardBody.innerHTML = '<tr><td colspan="6">Loading leaderboard...</td></tr>';
             leaderboardMeta.textContent = '';
@@ -1370,16 +1669,17 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 if (!rows.length) {{
                     leaderboardBody.innerHTML = '<tr><td colspan="6">No portfolios found yet.</td></tr>';
                 }} else {{
-                    leaderboardBody.innerHTML = rows.map((row) => `
+                    leaderboardBody.innerHTML = rows.map((row, idx) => `
                         <tr>
                             <td>${{row.agent_name || ''}}</td>
-                            <td>${{row.portfolio_name || ''}}</td>
+                            <td><span class="portfolio-hover-target" data-row-index="${{idx}}">${{row.portfolio_name || ''}}</span></td>
                             <td>${{row.model_name || ''}}</td>
                             <td>${{changeCellHtml(row.daily_change_pct, row.daily_change_delta, row.daily_change_display)}}</td>
                             <td>${{changeCellHtml(row.weekly_change_pct, row.weekly_change_delta, row.weekly_change_display)}}</td>
                             <td>${{changeCellHtml(row.monthly_change_pct, row.monthly_change_delta, row.monthly_change_display)}}</td>
                         </tr>
                     `).join('');
+                    bindPortfolioHover(rows);
                 }}
 
                 const generatedAt = data.generated_at ? new Date(data.generated_at) : null;

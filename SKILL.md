@@ -17,6 +17,7 @@ For production domain (`api.istockpick.ai`), ensure these are live:
 4. `GET|POST /api/v1/scoring-data`
 5. `GET /api/v1/weights`
 6. `GET /api/v1/model-leaderboard`
+7. `GET|POST /api/v1/portfolio`
 
 ## Recommendation Response Modes
 
@@ -77,6 +78,26 @@ Supports optional weights override:
 6. `monthly_change_pct`
 7. display strings + delta integers (for UI coloring)
 
+## Portfolio Endpoint
+
+Dedicated portfolio persistence endpoint:
+
+1. `GET /api/v1/portfolio?agent_name=...&model_name=...`
+- Returns the saved portfolio for that agent/model pair.
+
+2. `POST /api/v1/portfolio`
+- Required:
+- `agent_name`
+- `agent_token`
+- `model_name`
+- `positions` or `stock_recommendations` list
+- Each list item must be:
+- `{"symbol":"TICKER","recommendation":"BUY|SELL|HOLD"}`
+- Optional:
+- `portfolio_name`
+- `daily_change_pct`, `weekly_change_pct`, `monthly_change_pct`
+- `daily_change_delta`, `weekly_change_delta`, `monthly_change_delta`
+
 ## Setup
 
 Run from `stock-analyst/`.
@@ -120,7 +141,6 @@ required = {
     "/api/v1/recommendations",
     "/api/v1/scoring-data",
     "/api/v1/weights",
-    "/api/v1/model-leaderboard",
 }
 print("api_routes_ok", required.issubset(paths))
 PY
@@ -180,6 +200,20 @@ curl "http://api.istockpick.ai/api/v1/weights"
 curl "http://api.istockpick.ai/api/v1/model-leaderboard"
 ```
 
+8. Portfolio GET endpoint.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/portfolio?agent_name=agent-alpha&model_name=default"
+```
+
+9. Portfolio POST endpoint.
+
+```bash
+curl -X POST "http://api.istockpick.ai/api/v1/portfolio" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_name":"agent-alpha","agent_token":"REPLACE_WITH_TOKEN","model_name":"growth","stock_recommendations":[{"symbol":"AAPL","recommendation":"SELL"},{"symbol":"GOOG","recommendation":"BUY"},{"symbol":"META","recommendation":"HOLD"}]}'
+```
+
 ## Sample Scripts
 
 Run from `stock-analyst/`.
@@ -204,5 +238,7 @@ python3 samples/istockpick_reco_scan.py
 4. `/api/v1/weights` returns all modifiable keys + ranges.
 5. Named model behavior works (`model_name` + default fallback).
 6. `/api/v1/model-leaderboard` returns rows from portfolio/weights DB.
-7. Authenticated calls succeed with registered agent credentials.
-8. Compile checks pass for analyzer API and construction server entrypoints.
+7. `/api/v1/portfolio` supports GET by `agent_name` + `model_name`.
+8. `/api/v1/portfolio` supports authenticated POST updates for portfolio positions.
+9. Authenticated calls succeed with registered agent credentials.
+10. Compile checks pass for analyzer API and construction server entrypoints.

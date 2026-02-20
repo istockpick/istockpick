@@ -29,51 +29,63 @@
         },
         "growth": {
           "portfolio_name": "Growth Portfolio",
-          "daily_change_pct": 0.0,
-          "weekly_change_pct": 0.0,
-          "monthly_change_pct": 0.0,
           "positions": [
-            {
-              "symbol": "AAPL",
-              "recommendation": "SELL"
-            },
             {
               "symbol": "GOOG",
               "recommendation": "BUY"
             },
             {
-              "symbol": "META",
+              "symbol": "MSFT",
               "recommendation": "HOLD"
+            },
+            {
+              "symbol": "SNOW",
+              "recommendation": "BUY"
+            },
+            {
+              "symbol": "NOW",
+              "recommendation": "BUY"
+            },
+            {
+              "symbol": "AMZN",
+              "recommendation": "SELL"
             }
           ],
-          "updated_at": "2026-02-20T18:51:38.665528+00:00",
+          "daily_change_pct": 0.0,
+          "weekly_change_pct": 0.0,
+          "monthly_change_pct": 0.0,
           "daily_change_delta": 0,
           "weekly_change_delta": 0,
-          "monthly_change_delta": 0
+          "monthly_change_delta": 0,
+          "updated_at": "2026-02-20T20:39:46.885285+00:00"
         },
         "momentum": {
           "portfolio_name": "Momentum Portfolio",
-          "daily_change_pct": 0.0,
-          "weekly_change_pct": 0.0,
-          "monthly_change_pct": 0.0,
           "positions": [
             {
-              "symbol": "AAPL",
-              "recommendation": "SELL"
-            },
-            {
-              "symbol": "GOOG",
+              "symbol": "HOOD",
               "recommendation": "BUY"
             },
             {
-              "symbol": "META",
+              "symbol": "RBLX",
               "recommendation": "HOLD"
+            },
+            {
+              "symbol": "APP",
+              "recommendation": "BUY"
+            },
+            {
+              "symbol": "PLTR",
+              "recommendation": "BUY"
             }
           ],
-          "updated_at": "2026-02-20T18:52:05.616527+00:00",
+          "daily_change_pct": 0.0,
+          "weekly_change_pct": 0.0,
+          "monthly_change_pct": 0.0,
           "daily_change_delta": 0,
           "weekly_change_delta": 0,
-          "monthly_change_delta": 0
+          "monthly_change_delta": 0,
+          "updated_at": "2026-02-20T20:38:09.615578+00:00"
         }
       }
     }
