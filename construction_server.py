@@ -178,6 +178,8 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.serve_api_recommendation_get(query)
         elif parsed_path.path == '/api/v1/weights':
             self.serve_api_weights()
+        elif parsed_path.path == '/api/v1/model-leaderboard':
+            self.serve_api_model_leaderboard()
         elif parsed_path.path == '/api/v1/scoring-data':
             self.serve_api_scoring_data_get(query)
         elif parsed_path.path == '/status':
@@ -242,6 +244,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     def _weights_db_path(self):
         return os.path.join(os.path.dirname(__file__), "stock-analyst", "data", "weights.txt")
 
+    def _portfolio_db_path(self):
+        return os.path.join(os.path.dirname(__file__), "stock-analyst", "data", "portfolio.txt")
+
     def _load_agents(self):
         db_path = self._agents_db_path()
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -299,6 +304,27 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(payload, indent=2))
         os.replace(tmp_path, db_path)
+
+    def _load_portfolio_db(self):
+        db_path = self._portfolio_db_path()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        if not os.path.exists(db_path):
+            with open(db_path, "w", encoding="utf-8") as f:
+                f.write('{"agents": {}}')
+
+        with open(db_path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError("Portfolio DB is corrupted")
+        agents = payload.get("agents", {})
+        if not isinstance(agents, dict):
+            raise ValueError("Portfolio DB has invalid format")
+        return agents
 
     def _normalize_model_name(self, raw_model_name):
         model_name = (raw_model_name or "").strip()
@@ -591,6 +617,129 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                     "sentiment_sell_threshold": "must be less than sentiment_buy_threshold",
                     "action_sell_threshold": "must be less than action_buy_threshold",
                 },
+            },
+        )
+
+    def _safe_percent_value(self, value):
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip().replace("%", "")
+            if not text:
+                return 0.0
+            try:
+                return float(text)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    def _format_change_with_delta(self, value, delta_hint):
+        pct = self._safe_percent_value(value)
+        delta = self._safe_percent_value(delta_hint)
+        delta_int = int(round(delta))
+        if delta_int > 0:
+            delta_text = f"+{delta_int}"
+        elif delta_int < 0:
+            delta_text = f"{delta_int}"
+        else:
+            delta_text = "0"
+        return f"{pct:.2f}%({delta_text})"
+
+    def _portfolio_name_for_model(self, model_name, model_data):
+        if isinstance(model_data, dict):
+            portfolio_name = str(model_data.get("portfolio_name", "")).strip()
+            if portfolio_name:
+                return portfolio_name
+        if model_name == self.DEFAULT_MODEL_NAME:
+            return "Default Portfolio"
+        return f"{model_name.title()} Portfolio"
+
+    def _portfolio_entry_for_model(self, portfolio_agents, agent_name, model_name):
+        if not isinstance(portfolio_agents, dict):
+            return {}
+        agent_block = portfolio_agents.get(agent_name)
+        if not isinstance(agent_block, dict):
+            return {}
+        models = agent_block.get("models")
+        if not isinstance(models, dict):
+            return {}
+        model_block = models.get(model_name)
+        if not isinstance(model_block, dict):
+            return {}
+        return model_block
+
+    def serve_api_model_leaderboard(self):
+        with ConstructionHandler.WEIGHTS_DB_LOCK:
+            try:
+                agents = self._load_weights_db()
+            except ValueError:
+                self.send_json(500, {"error": "Weights database unavailable"})
+                return
+            try:
+                portfolio_agents = self._load_portfolio_db()
+            except ValueError:
+                portfolio_agents = {}
+
+        rows = []
+        for fallback_agent_name, record in agents.items():
+            normalized = self._normalize_agent_weights_record(record, fallback_agent_name)
+            if not normalized:
+                continue
+            agent_name = normalized.get("agent_name", fallback_agent_name)
+            models = normalized.get("models", {})
+            for model_name, model_data in models.items():
+                if not isinstance(model_data, dict):
+                    continue
+                portfolio_entry = self._portfolio_entry_for_model(portfolio_agents, agent_name, model_name)
+                rows.append(
+                    {
+                        "agent_name": agent_name,
+                        "model_name": model_name,
+                        "portfolio_name": self._portfolio_name_for_model(model_name, portfolio_entry or model_data),
+                        "daily_change_pct": self._safe_percent_value(portfolio_entry.get("daily_change_pct")),
+                        "weekly_change_pct": self._safe_percent_value(portfolio_entry.get("weekly_change_pct")),
+                        "monthly_change_pct": self._safe_percent_value(portfolio_entry.get("monthly_change_pct")),
+                        "daily_change_delta": self._safe_percent_value(
+                            portfolio_entry.get("daily_change_delta", portfolio_entry.get("daily_change_delta_hint", 0))
+                        ),
+                        "weekly_change_delta": self._safe_percent_value(
+                            portfolio_entry.get("weekly_change_delta", portfolio_entry.get("weekly_change_delta_hint", 0))
+                        ),
+                        "monthly_change_delta": self._safe_percent_value(
+                            portfolio_entry.get("monthly_change_delta", portfolio_entry.get("monthly_change_delta_hint", 0))
+                        ),
+                        "daily_change_display": self._format_change_with_delta(
+                            portfolio_entry.get("daily_change_pct"),
+                            portfolio_entry.get("daily_change_delta", portfolio_entry.get("daily_change_delta_hint", 0)),
+                        ),
+                        "weekly_change_display": self._format_change_with_delta(
+                            portfolio_entry.get("weekly_change_pct"),
+                            portfolio_entry.get("weekly_change_delta", portfolio_entry.get("weekly_change_delta_hint", 0)),
+                        ),
+                        "monthly_change_display": self._format_change_with_delta(
+                            portfolio_entry.get("monthly_change_pct"),
+                            portfolio_entry.get("monthly_change_delta", portfolio_entry.get("monthly_change_delta_hint", 0)),
+                        ),
+                        "positions": portfolio_entry.get("positions", []),
+                    }
+                )
+
+        rows.sort(
+            key=lambda row: (
+                -row.get("daily_change_pct", 0.0),
+                -row.get("weekly_change_pct", 0.0),
+                -row.get("monthly_change_pct", 0.0),
+                str(row.get("agent_name", "")),
+                str(row.get("model_name", "")),
+            )
+        )
+
+        self.send_json(
+            200,
+            {
+                "total": len(rows),
+                "rows": rows,
+                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             },
         )
 
@@ -954,6 +1103,75 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             opacity: 0.8;
         }}
 
+        .leaderboard-card {{
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            text-align: left;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+        }}
+
+        .leaderboard-title {{
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 0.6rem;
+            text-align: center;
+        }}
+
+        .leaderboard-wrap {{
+            overflow-x: auto;
+        }}
+
+        .leaderboard-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+        }}
+
+        .leaderboard-table th,
+        .leaderboard-table td {{
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+            padding: 0.55rem 0.45rem;
+            text-align: left;
+            white-space: nowrap;
+        }}
+
+        .leaderboard-table th {{
+            opacity: 0.92;
+            font-weight: 600;
+        }}
+
+        .leaderboard-meta {{
+            margin-top: 0.6rem;
+            font-size: 0.82rem;
+            opacity: 0.78;
+        }}
+
+        .pct-pos {{
+            color: #65f9a8;
+            font-weight: 600;
+        }}
+
+        .pct-neg {{
+            color: #ff8b8b;
+            font-weight: 600;
+        }}
+
+        .delta-pos {{
+            color: #65f9a8;
+            font-weight: 600;
+        }}
+
+        .delta-neg {{
+            color: #ff8b8b;
+            font-weight: 600;
+        }}
+
+        .delta-zero {{
+            opacity: 0.9;
+        }}
+
         .spinner {{
             width: 18px;
             height: 18px;
@@ -1052,6 +1270,27 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 <div class="analysis-grid" id="analysisGrid"></div>
                 <div class="analysis-meta" id="analysisMeta"></div>
             </div>
+            <div class="leaderboard-card" id="leaderboardCard">
+                <div class="leaderboard-title">Portfolio Leaderboard</div>
+                <div class="leaderboard-wrap">
+                    <table class="leaderboard-table">
+                        <thead>
+                            <tr>
+                                <th>Agent Name</th>
+                                <th>Portfolio Name</th>
+                                <th>Model Name</th>
+                                <th>Daily % Change</th>
+                                <th>Weekly Change</th>
+                                <th>Monthly Change</th>
+                            </tr>
+                        </thead>
+                        <tbody id="leaderboardBody">
+                            <tr><td colspan="6">Loading leaderboard...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="leaderboard-meta" id="leaderboardMeta"></div>
+            </div>
         </div>
 
         <div class="command-card">curl -L "https://api.istockpick.ai/SKILL.md" -o SKILL.md</div>
@@ -1075,6 +1314,82 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         const analysisTitle = document.getElementById('analysisTitle');
         const analysisGrid = document.getElementById('analysisGrid');
         const analysisMeta = document.getElementById('analysisMeta');
+        const leaderboardBody = document.getElementById('leaderboardBody');
+        const leaderboardMeta = document.getElementById('leaderboardMeta');
+
+        const fmtPct = (value) => {{
+            const n = Number(value);
+            if (!Number.isFinite(n)) return '0.00%';
+            const sign = n > 0 ? '+' : '';
+            return `${{sign}}${{n.toFixed(2)}}%`;
+        }};
+
+        const fmtDelta = (value) => {{
+            const n = Number(value);
+            if (!Number.isFinite(n) || n === 0) return '0';
+            const i = Math.round(n);
+            if (i === 0) return '0';
+            const sign = i > 0 ? '+' : '';
+            return `${{sign}}${{i}}`;
+        }};
+
+        const changeCellHtml = (pctValue, deltaValue, fallbackDisplay) => {{
+            const pct = Number(pctValue);
+            const delta = Number(deltaValue);
+
+            if (!Number.isFinite(pct) && typeof fallbackDisplay === 'string' && fallbackDisplay) {{
+                return fallbackDisplay;
+            }}
+
+            let pctClass = '';
+            if (pct > 0) pctClass = 'pct-pos';
+            if (pct < 0) pctClass = 'pct-neg';
+            let deltaClass = 'delta-zero';
+            if (Number.isFinite(delta)) {{
+                if (delta > 0) deltaClass = 'delta-pos';
+                if (delta < 0) deltaClass = 'delta-neg';
+            }}
+
+            const pctAttr = pctClass ? ` class=\"${{pctClass}}\"` : '';
+            return `<span${{pctAttr}}>${{fmtPct(pct)}}</span>(<span class=\"${{deltaClass}}\">${{fmtDelta(delta)}}</span>)`;
+        }};
+
+        async function loadLeaderboard() {{
+            leaderboardBody.innerHTML = '<tr><td colspan="6">Loading leaderboard...</td></tr>';
+            leaderboardMeta.textContent = '';
+            try {{
+                const res = await fetch('/api/v1/model-leaderboard');
+                const data = await res.json();
+
+                if (!res.ok) {{
+                    leaderboardBody.innerHTML = `<tr><td colspan="6">${{data.error || 'Failed to load leaderboard.'}}</td></tr>`;
+                    return;
+                }}
+
+                const rows = Array.isArray(data.rows) ? data.rows : [];
+                if (!rows.length) {{
+                    leaderboardBody.innerHTML = '<tr><td colspan="6">No portfolios found yet.</td></tr>';
+                }} else {{
+                    leaderboardBody.innerHTML = rows.map((row) => `
+                        <tr>
+                            <td>${{row.agent_name || ''}}</td>
+                            <td>${{row.portfolio_name || ''}}</td>
+                            <td>${{row.model_name || ''}}</td>
+                            <td>${{changeCellHtml(row.daily_change_pct, row.daily_change_delta, row.daily_change_display)}}</td>
+                            <td>${{changeCellHtml(row.weekly_change_pct, row.weekly_change_delta, row.weekly_change_display)}}</td>
+                            <td>${{changeCellHtml(row.monthly_change_pct, row.monthly_change_delta, row.monthly_change_display)}}</td>
+                        </tr>
+                    `).join('');
+                }}
+
+                const generatedAt = data.generated_at ? new Date(data.generated_at) : null;
+                leaderboardMeta.textContent = generatedAt && !isNaN(generatedAt)
+                    ? `Last updated: ${{generatedAt.toLocaleString()}}`
+                    : '';
+            }} catch (err) {{
+                leaderboardBody.innerHTML = '<tr><td colspan="6">Network error while loading leaderboard.</td></tr>';
+            }}
+        }}
 
         lookupForm.addEventListener('submit', async (e) => {{
             e.preventDefault();
@@ -1131,6 +1446,8 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 analysisMeta.textContent = '';
             }}
         }});
+
+        loadLeaderboard();
     </script>
 </body>
 </html>'''

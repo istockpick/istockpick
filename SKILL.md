@@ -16,10 +16,12 @@ For production domain (`api.istockpick.ai`), ensure these are live:
 3. `GET|POST /api/v1/recommendation`
 4. `GET|POST /api/v1/scoring-data`
 5. `GET /api/v1/weights`
+6. `GET /api/v1/model-leaderboard`
 
 ## Recommendation Response Modes
 
 `/api/v1/recommendation` supports `verbose` (and legacy alias `verborse`).
+It also supports optional `model_name` for personalized model selection.
 
 1. Default (`verbose=false` or omitted):
 - Action-only payload: `{"recommendation":"BUY|HOLD|SELL"}`
@@ -30,6 +32,7 @@ For production domain (`api.istockpick.ai`), ensure these are live:
 - `sentiment_analysis`
 - `ai_recommendation`
 - `scoring_weights`
+- `model_name`
 
 ## Scoring-Data Endpoint
 
@@ -45,16 +48,34 @@ Supports optional weights override:
 
 1. GET: `weights` as JSON-encoded query string.
 2. POST: `weights` as JSON object body.
+3. Optional `model_name` (GET query or POST body) selects a named personalized model.
 
 ## Weights Discovery + Persistence
 
 1. `GET /api/v1/weights` returns all modifiable keys with default/min/max and threshold rules.
-2. Per-agent weight persistence is stored in:
+2. Per-agent model persistence is stored in:
 - `stock-analyst/data/weights.txt`
-3. Recommendation/scoring calls use weights in this order:
-- Request `weights` override (if provided), and persist it for the agent.
-- Saved agent weights from `stock-analyst/data/weights.txt`.
+3. Model portfolio metadata is stored in:
+- `stock-analyst/data/portfolio.txt`
+4. Recommendation/scoring calls use weights in this order:
+- Request `weights` override (if provided), and persist it for the selected model.
+- Saved agent/model weights from `stock-analyst/data/weights.txt`.
 - Hardcoded defaults.
+5. Default-model behavior:
+- If `model_name` is omitted, updates/read apply to the agent's `default` model.
+- If `model_name` is provided and missing, API returns 404.
+
+## Portfolio Leaderboard
+
+`GET /api/v1/model-leaderboard` returns rows with:
+
+1. `agent_name`
+2. `portfolio_name`
+3. `model_name`
+4. `daily_change_pct`
+5. `weekly_change_pct`
+6. `monthly_change_pct`
+7. display strings + delta integers (for UI coloring)
 
 ## Setup
 
@@ -99,6 +120,7 @@ required = {
     "/api/v1/recommendations",
     "/api/v1/scoring-data",
     "/api/v1/weights",
+    "/api/v1/model-leaderboard",
 }
 print("api_routes_ok", required.issubset(paths))
 PY
@@ -152,6 +174,12 @@ curl "http://api.istockpick.ai/api/v1/scoring-data?stock=AAPL&agent_name=agent-a
 curl "http://api.istockpick.ai/api/v1/weights"
 ```
 
+7. Model leaderboard endpoint.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/model-leaderboard"
+```
+
 ## Sample Scripts
 
 Run from `stock-analyst/`.
@@ -174,5 +202,7 @@ python3 samples/istockpick_reco_scan.py
 2. Recommendation endpoint honors `verbose` behavior.
 3. Scoring-data endpoint is reachable and returns price + raw scoring inputs.
 4. `/api/v1/weights` returns all modifiable keys + ranges.
-5. Authenticated calls succeed with registered agent credentials.
-6. Compile checks pass for analyzer API and construction server entrypoints.
+5. Named model behavior works (`model_name` + default fallback).
+6. `/api/v1/model-leaderboard` returns rows from portfolio/weights DB.
+7. Authenticated calls succeed with registered agent credentials.
+8. Compile checks pass for analyzer API and construction server entrypoints.

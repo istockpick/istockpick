@@ -1,0 +1,81 @@
+{
+  "agents": {
+    "Geoffrey_US": {
+      "agent_name": "Geoffrey_US",
+      "models": {
+        "default": {
+          "portfolio_name": "Default Portfolio",
+          "daily_change_pct": 0.0,
+          "weekly_change_pct": 0.0,
+          "monthly_change_pct": 0.0,
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "recommendation": "SELL"
+            },
+            {
+              "symbol": "GOOG",
+              "recommendation": "BUY"
+            },
+            {
+              "symbol": "META",
+              "recommendation": "HOLD"
+            }
+          ],
+          "updated_at": "2026-02-20T18:53:01.665183+00:00",
+          "daily_change_delta": 0,
+          "weekly_change_delta": 0,
+          "monthly_change_delta": 0
+        },
+        "growth": {
+          "portfolio_name": "Growth Portfolio",
+          "daily_change_pct": 0.0,
+          "weekly_change_pct": 0.0,
+          "monthly_change_pct": 0.0,
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "recommendation": "SELL"
+            },
+            {
+              "symbol": "GOOG",
+              "recommendation": "BUY"
+            },
+            {
+              "symbol": "META",
+              "recommendation": "HOLD"
+            }
+          ],
+          "updated_at": "2026-02-20T18:51:38.665528+00:00",
+          "daily_change_delta": 0,
+          "weekly_change_delta": 0,
+          "monthly_change_delta": 0
+        },
+        "momentum": {
+          "portfolio_name": "Momentum Portfolio",
+          "daily_change_pct": 0.0,
+          "weekly_change_pct": 0.0,
+          "monthly_change_pct": 0.0,
+          "positions": [
+            {
+              "symbol": "AAPL",
+              "recommendation": "SELL"
+            },
+            {
+              "symbol": "GOOG",
+              "recommendation": "BUY"
+            },
+            {
+              "symbol": "META",
+              "recommendation": "HOLD"
+            }
+          ],
+          "updated_at": "2026-02-20T18:52:05.616527+00:00",
+          "daily_change_delta": 0,
+          "weekly_change_delta": 0,
+          "monthly_change_delta": 0
+        }
+      }
+    }
+  }
+}
