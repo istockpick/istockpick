@@ -155,6 +155,8 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
     MAX_LOOKUP_QUERY_LEN = 120
     STOCK_QUERY_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
     AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,63}$")
+    MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,63}$")
+    DEFAULT_MODEL_NAME = "default"
 
     def end_headers(self):
         # Baseline hardening headers for every response.
@@ -298,28 +300,113 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             f.write(json.dumps(payload, indent=2))
         os.replace(tmp_path, db_path)
 
-    def _get_saved_weights(self, agent_name, agent_token):
+    def _normalize_model_name(self, raw_model_name):
+        model_name = (raw_model_name or "").strip()
+        if not model_name:
+            return None
+        if len(model_name) > 64:
+            return None
+        if not self.MODEL_NAME_PATTERN.fullmatch(model_name):
+            return None
+        return model_name
+
+    def _normalize_agent_weights_record(self, record, fallback_agent_name):
+        if not isinstance(record, dict):
+            return None
+
+        agent_name = str(record.get("agent_name") or fallback_agent_name).strip()
+        agent_token = str(record.get("agent_token") or "").strip()
+        default_model = str(record.get("default_model") or self.DEFAULT_MODEL_NAME).strip() or self.DEFAULT_MODEL_NAME
+
+        models = {}
+        raw_models = record.get("models")
+        if isinstance(raw_models, dict):
+            for model_key, model_data in raw_models.items():
+                model_name = self._normalize_model_name(model_key)
+                if model_name is None:
+                    continue
+                if not isinstance(model_data, dict):
+                    continue
+                weights = model_data.get("weights")
+                if not isinstance(weights, dict):
+                    continue
+                models[model_name] = {
+                    "weights": weights,
+                    "updated_at": model_data.get("updated_at"),
+                }
+
+        legacy_weights = record.get("weights")
+        if isinstance(legacy_weights, dict) and default_model not in models:
+            models[default_model] = {
+                "weights": legacy_weights,
+                "updated_at": record.get("updated_at"),
+            }
+
+        if default_model not in models:
+            if models:
+                default_model = next(iter(models.keys()))
+            else:
+                default_model = self.DEFAULT_MODEL_NAME
+
+        return {
+            "agent_name": agent_name or fallback_agent_name,
+            "agent_token": agent_token,
+            "default_model": default_model,
+            "models": models,
+        }
+
+    def _get_default_model_name(self, agent_name, agent_token):
         with ConstructionHandler.WEIGHTS_DB_LOCK:
             try:
                 agents = self._load_weights_db()
             except ValueError:
-                return None
-            record = agents.get((agent_name or "").strip())
-            if not isinstance(record, dict):
-                return None
-            expected_token = str(record.get("agent_token", ""))
-            if not expected_token or not secrets.compare_digest(expected_token, (agent_token or "").strip()):
-                return None
-            weights = record.get("weights")
-            return weights if isinstance(weights, dict) else None
+                return self.DEFAULT_MODEL_NAME
+            cleaned_name = (agent_name or "").strip()
+            cleaned_token = (agent_token or "").strip()
+            record = agents.get(cleaned_name)
+            normalized = self._normalize_agent_weights_record(record, cleaned_name)
+            if not normalized:
+                return self.DEFAULT_MODEL_NAME
+            expected_token = normalized.get("agent_token", "")
+            if not expected_token or not secrets.compare_digest(expected_token, cleaned_token):
+                return self.DEFAULT_MODEL_NAME
+            return normalized.get("default_model", self.DEFAULT_MODEL_NAME)
 
-    def _save_agent_weights(self, agent_name, agent_token, weights):
+    def _get_saved_weights(self, agent_name, agent_token, model_name=None):
+        with ConstructionHandler.WEIGHTS_DB_LOCK:
+            try:
+                agents = self._load_weights_db()
+            except ValueError:
+                return None, (model_name or self.DEFAULT_MODEL_NAME)
+
+            cleaned_name = (agent_name or "").strip()
+            cleaned_token = (agent_token or "").strip()
+            record = agents.get(cleaned_name)
+            normalized = self._normalize_agent_weights_record(record, cleaned_name)
+            if not normalized:
+                return None, (model_name or self.DEFAULT_MODEL_NAME)
+
+            expected_token = normalized.get("agent_token", "")
+            if not expected_token or not secrets.compare_digest(expected_token, cleaned_token):
+                return None, (model_name or self.DEFAULT_MODEL_NAME)
+
+            active_model = model_name or normalized.get("default_model", self.DEFAULT_MODEL_NAME)
+            model_entry = (normalized.get("models") or {}).get(active_model)
+            if not isinstance(model_entry, dict):
+                return None, active_model
+            weights = model_entry.get("weights")
+            if not isinstance(weights, dict):
+                return None, active_model
+            return weights, active_model
+
+    def _save_agent_weights(self, agent_name, agent_token, weights, model_name=None):
         if not isinstance(weights, dict):
             return
         cleaned_name = (agent_name or "").strip()
         cleaned_token = (agent_token or "").strip()
         if not cleaned_name or not cleaned_token:
             return
+        normalized_model = self._normalize_model_name(model_name) if model_name else None
 
         with ConstructionHandler.WEIGHTS_DB_LOCK:
             try:
@@ -327,12 +414,22 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             except ValueError:
                 agents = {}
 
-            agents[cleaned_name] = {
+            existing = self._normalize_agent_weights_record(agents.get(cleaned_name), cleaned_name) or {
                 "agent_name": cleaned_name,
                 "agent_token": cleaned_token,
+                "default_model": self.DEFAULT_MODEL_NAME,
+                "models": {},
+            }
+            active_model = normalized_model or existing.get("default_model", self.DEFAULT_MODEL_NAME) or self.DEFAULT_MODEL_NAME
+            existing["agent_name"] = cleaned_name
+            existing["agent_token"] = cleaned_token
+            existing["default_model"] = existing.get("default_model", self.DEFAULT_MODEL_NAME) or self.DEFAULT_MODEL_NAME
+            existing.setdefault("models", {})
+            existing["models"][active_model] = {
                 "weights": weights,
                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
+            agents[cleaned_name] = existing
             self._save_weights_db(agents)
 
     def _register_agent(self, name):
@@ -407,6 +504,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         agent_name=None,
         agent_token=None,
         persist_weights=False,
+        model_name=None,
     ):
         stock = (stock or "").strip()
         if not stock:
@@ -444,7 +542,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if persist_weights:
-            self._save_agent_weights(agent_name, agent_token, weights)
+            self._save_agent_weights(agent_name, agent_token, weights, model_name=model_name)
 
         if not verbose:
             self.send_json(200, {"recommendation": action})
@@ -460,6 +558,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 "sentiment_analysis": analysis.get("sentiment_analysis"),
                 "ai_recommendation": analysis.get("ai_recommendation"),
                 "scoring_weights": analysis.get("scoring_weights"),
+                "model_name": model_name or self.DEFAULT_MODEL_NAME,
                 "generated_at": analysis.get("generated_at"),
             },
         )
@@ -499,6 +598,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         stock = query.get("stock", [""])[0]
         agent_name = query.get("agent_name", [""])[0]
         agent_token = query.get("agent_token", [""])[0]
+        raw_model_name = query.get("model_name", [""])[0]
+        model_name = self._normalize_model_name(raw_model_name) if raw_model_name else None
+        if raw_model_name and model_name is None:
+            self.send_json(400, {"error": "Invalid model_name format"})
+            return
         raw_weights = query.get("weights", [""])[0]
         requested_weights = _parse_weights_payload(raw_weights)
         if raw_weights not in ("", None) and requested_weights is None:
@@ -510,7 +614,15 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         if not self._validate_agent(agent_name, agent_token):
             return
-        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        active_model = model_name or self._get_default_model_name(agent_name, agent_token)
+        if requested_weights is not None:
+            weights = requested_weights
+        else:
+            weights, resolved_model = self._get_saved_weights(agent_name, agent_token, model_name=active_model)
+            active_model = resolved_model
+            if model_name and weights is None:
+                self.send_json(404, {"error": f"Model '{model_name}' not found for agent."})
+                return
         self._build_recommendation_response(
             stock,
             weights=weights,
@@ -518,6 +630,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             agent_name=agent_name,
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
+            model_name=active_model,
         )
 
     def serve_api_recommendation_post(self):
@@ -526,6 +639,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if not self._validate_agent(payload.get("agent_name", ""), payload.get("agent_token", "")):
+            return
+        raw_model_name = payload.get("model_name", "")
+        model_name = self._normalize_model_name(raw_model_name) if raw_model_name else None
+        if raw_model_name and model_name is None:
+            self.send_json(400, {"error": "Invalid model_name format"})
             return
         requested_weights = _parse_weights_payload(payload.get("weights"))
         if "weights" in payload and requested_weights is None:
@@ -536,7 +654,15 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             verbose = _parse_bool(payload.get("verborse"), default=verbose)
         agent_name = payload.get("agent_name", "")
         agent_token = payload.get("agent_token", "")
-        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        active_model = model_name or self._get_default_model_name(agent_name, agent_token)
+        if requested_weights is not None:
+            weights = requested_weights
+        else:
+            weights, resolved_model = self._get_saved_weights(agent_name, agent_token, model_name=active_model)
+            active_model = resolved_model
+            if model_name and weights is None:
+                self.send_json(404, {"error": f"Model '{model_name}' not found for agent."})
+                return
         self._build_recommendation_response(
             payload.get("stock", ""),
             weights=weights,
@@ -544,6 +670,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             agent_name=agent_name,
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
+            model_name=active_model,
         )
 
     def _build_scoring_data_response(
@@ -553,6 +680,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         agent_name=None,
         agent_token=None,
         persist_weights=False,
+        model_name=None,
     ):
         stock = (stock or "").strip()
         if not stock:
@@ -586,7 +714,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         if persist_weights:
-            self._save_agent_weights(agent_name, agent_token, weights)
+            self._save_agent_weights(agent_name, agent_token, weights, model_name=model_name)
 
         self.send_json(
             200,
@@ -598,6 +726,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 "snapshot": data.get("snapshot"),
                 "scoring_inputs": data.get("scoring_inputs"),
                 "scoring_weights": data.get("scoring_weights"),
+                "model_name": model_name or self.DEFAULT_MODEL_NAME,
                 "generated_at": data.get("generated_at"),
             },
         )
@@ -606,6 +735,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         stock = query.get("stock", [""])[0]
         agent_name = query.get("agent_name", [""])[0]
         agent_token = query.get("agent_token", [""])[0]
+        raw_model_name = query.get("model_name", [""])[0]
+        model_name = self._normalize_model_name(raw_model_name) if raw_model_name else None
+        if raw_model_name and model_name is None:
+            self.send_json(400, {"error": "Invalid model_name format"})
+            return
         raw_weights = query.get("weights", [""])[0]
         requested_weights = _parse_weights_payload(raw_weights)
         if raw_weights not in ("", None) and requested_weights is None:
@@ -614,13 +748,22 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         if not self._validate_agent(agent_name, agent_token):
             return
-        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        active_model = model_name or self._get_default_model_name(agent_name, agent_token)
+        if requested_weights is not None:
+            weights = requested_weights
+        else:
+            weights, resolved_model = self._get_saved_weights(agent_name, agent_token, model_name=active_model)
+            active_model = resolved_model
+            if model_name and weights is None:
+                self.send_json(404, {"error": f"Model '{model_name}' not found for agent."})
+                return
         self._build_scoring_data_response(
             stock,
             weights=weights,
             agent_name=agent_name,
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
+            model_name=active_model,
         )
 
     def serve_api_scoring_data_post(self):
@@ -630,19 +773,33 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         if not self._validate_agent(payload.get("agent_name", ""), payload.get("agent_token", "")):
             return
+        raw_model_name = payload.get("model_name", "")
+        model_name = self._normalize_model_name(raw_model_name) if raw_model_name else None
+        if raw_model_name and model_name is None:
+            self.send_json(400, {"error": "Invalid model_name format"})
+            return
         requested_weights = _parse_weights_payload(payload.get("weights"))
         if "weights" in payload and requested_weights is None:
             self.send_json(400, {"error": "Invalid weights payload. Expected a JSON object."})
             return
         agent_name = payload.get("agent_name", "")
         agent_token = payload.get("agent_token", "")
-        weights = requested_weights if requested_weights is not None else self._get_saved_weights(agent_name, agent_token)
+        active_model = model_name or self._get_default_model_name(agent_name, agent_token)
+        if requested_weights is not None:
+            weights = requested_weights
+        else:
+            weights, resolved_model = self._get_saved_weights(agent_name, agent_token, model_name=active_model)
+            active_model = resolved_model
+            if model_name and weights is None:
+                self.send_json(404, {"error": f"Model '{model_name}' not found for agent."})
+                return
         self._build_scoring_data_response(
             payload.get("stock", ""),
             weights=weights,
             agent_name=agent_name,
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
+            model_name=active_model,
         )
     
     def serve_construction_page(self):

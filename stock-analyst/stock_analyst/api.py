@@ -16,12 +16,18 @@ _MAX_STOCK_INPUT_LEN = 120
 _MAX_AGENT_NAME_LEN = 64
 _MAX_AGENT_TOKEN_LEN = 256
 _AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,63}$")
+_MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-\.]{0,63}$")
+_DEFAULT_MODEL_NAME = "default"
 
 
 class RecommendationRequest(BaseModel):
     stock: str = Field(..., description="Ticker symbol or company name")
     agent_name: str = Field(..., description="Registered agent name")
     agent_token: str = Field(..., description="Registered agent token")
+    model_name: Optional[str] = Field(
+        default=None,
+        description="Optional personalized model name",
+    )
     weights: Optional["ScoringWeights"] = Field(
         default=None,
         description="Optional scoring weight overrides",
@@ -44,6 +50,10 @@ class BatchRecommendationRequest(BaseModel):
     stocks: list[str] = Field(..., description="List of ticker symbols or company names")
     agent_name: str = Field(..., description="Registered agent name")
     agent_token: str = Field(..., description="Registered agent token")
+    model_name: Optional[str] = Field(
+        default=None,
+        description="Optional personalized model name",
+    )
     weights: Optional["ScoringWeights"] = Field(
         default=None,
         description="Optional scoring weight overrides",
@@ -62,6 +72,10 @@ class ScoringDataRequest(BaseModel):
     stock: str = Field(..., description="Ticker symbol or company name")
     agent_name: str = Field(..., description="Registered agent name")
     agent_token: str = Field(..., description="Registered agent token")
+    model_name: Optional[str] = Field(
+        default=None,
+        description="Optional personalized model name",
+    )
     weights: Optional["ScoringWeights"] = Field(
         default=None,
         description="Optional scoring weight overrides",
@@ -142,6 +156,17 @@ def _resolve_verbose_flag(verbose: bool = False, verborse: Optional[bool] = None
     return bool(verbose)
 
 
+def _normalize_model_name(model_name: Optional[str]) -> Optional[str]:
+    if model_name is None:
+        return None
+    cleaned = model_name.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 64 or not _MODEL_NAME_PATTERN.fullmatch(cleaned):
+        raise HTTPException(status_code=400, detail="Invalid model_name format")
+    return cleaned
+
+
 def _looks_like_ticker(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9\.\-]{0,9}", value.strip()))
 
@@ -189,6 +214,10 @@ def create_app() -> FastAPI:
         stock: str = Query(..., description="Ticker symbol or company name"),
         agent_name: str = Query(..., description="Registered agent name"),
         agent_token: str = Query(..., description="Registered agent token"),
+        model_name: Optional[str] = Query(
+            default=None,
+            description="Optional personalized model name",
+        ),
         verbose: bool = Query(
             default=False,
             description="If true, return detailed recommendation sections",
@@ -203,35 +232,50 @@ def create_app() -> FastAPI:
         ),
     ) -> dict:
         _validate_agent(agent_name, agent_token)
+        normalized_model = _normalize_model_name(model_name)
         weights_payload = _parse_weights_query(weights)
         verbose_flag = _resolve_verbose_flag(verbose=verbose, verborse=verborse)
-        effective_weights = _resolve_effective_weights(agent_name, agent_token, weights_payload)
+        effective_weights, active_model = _resolve_effective_weights(
+            agent_name,
+            agent_token,
+            weights_payload,
+            normalized_model,
+        )
         response = _build_recommendation_response(
             stock,
             effective_weights,
             verbose=verbose_flag,
+            model_name=active_model,
         )
         if weights_payload is not None:
-            _save_agent_weights(agent_name, agent_token, weights_payload)
+            _save_agent_weights(agent_name, agent_token, weights_payload, model_name=active_model)
         return response
 
     @app.post("/api/v1/recommendation")
     def post_recommendation(request: RecommendationRequest) -> dict:
         _validate_agent(request.agent_name, request.agent_token)
+        normalized_model = _normalize_model_name(request.model_name)
         verbose_flag = _resolve_verbose_flag(verbose=request.verbose, verborse=request.verborse)
         requested_weights = _weights_to_payload(request.weights)
-        effective_weights = _resolve_effective_weights(
+        effective_weights, active_model = _resolve_effective_weights(
             request.agent_name,
             request.agent_token,
             requested_weights,
+            normalized_model,
         )
         response = _build_recommendation_response(
             request.stock,
             effective_weights,
             verbose=verbose_flag,
+            model_name=active_model,
         )
         if requested_weights is not None:
-            _save_agent_weights(request.agent_name, request.agent_token, requested_weights)
+            _save_agent_weights(
+                request.agent_name,
+                request.agent_token,
+                requested_weights,
+                model_name=active_model,
+            )
         return response
 
     @app.get("/api/v1/recommendations")
@@ -239,6 +283,10 @@ def create_app() -> FastAPI:
         stocks: str = Query(..., description="Comma-separated ticker symbols or company names"),
         agent_name: str = Query(..., description="Registered agent name"),
         agent_token: str = Query(..., description="Registered agent token"),
+        model_name: Optional[str] = Query(
+            default=None,
+            description="Optional personalized model name",
+        ),
         verbose: bool = Query(
             default=False,
             description="If true, return detailed recommendation sections per stock",
@@ -253,36 +301,51 @@ def create_app() -> FastAPI:
         ),
     ) -> dict:
         _validate_agent(agent_name, agent_token)
+        normalized_model = _normalize_model_name(model_name)
         parsed_stocks = _parse_batch_stocks(stocks)
         weights_payload = _parse_weights_query(weights)
         verbose_flag = _resolve_verbose_flag(verbose=verbose, verborse=verborse)
-        effective_weights = _resolve_effective_weights(agent_name, agent_token, weights_payload)
+        effective_weights, active_model = _resolve_effective_weights(
+            agent_name,
+            agent_token,
+            weights_payload,
+            normalized_model,
+        )
         response = _build_batch_recommendation_response(
             parsed_stocks,
             effective_weights,
             verbose=verbose_flag,
+            model_name=active_model,
         )
         if weights_payload is not None:
-            _save_agent_weights(agent_name, agent_token, weights_payload)
+            _save_agent_weights(agent_name, agent_token, weights_payload, model_name=active_model)
         return response
 
     @app.post("/api/v1/recommendations")
     def post_recommendations(request: BatchRecommendationRequest) -> dict:
         _validate_agent(request.agent_name, request.agent_token)
+        normalized_model = _normalize_model_name(request.model_name)
         verbose_flag = _resolve_verbose_flag(verbose=request.verbose, verborse=request.verborse)
         requested_weights = _weights_to_payload(request.weights)
-        effective_weights = _resolve_effective_weights(
+        effective_weights, active_model = _resolve_effective_weights(
             request.agent_name,
             request.agent_token,
             requested_weights,
+            normalized_model,
         )
         response = _build_batch_recommendation_response(
             request.stocks,
             effective_weights,
             verbose=verbose_flag,
+            model_name=active_model,
         )
         if requested_weights is not None:
-            _save_agent_weights(request.agent_name, request.agent_token, requested_weights)
+            _save_agent_weights(
+                request.agent_name,
+                request.agent_token,
+                requested_weights,
+                model_name=active_model,
+            )
         return response
 
     @app.get("/api/v1/scoring-data")
@@ -290,34 +353,52 @@ def create_app() -> FastAPI:
         stock: str = Query(..., description="Ticker symbol or company name"),
         agent_name: str = Query(..., description="Registered agent name"),
         agent_token: str = Query(..., description="Registered agent token"),
+        model_name: Optional[str] = Query(
+            default=None,
+            description="Optional personalized model name",
+        ),
         weights: Optional[str] = Query(
             default=None,
             description="Optional JSON-encoded scoring weights",
         ),
     ) -> dict:
         _validate_agent(agent_name, agent_token)
+        normalized_model = _normalize_model_name(model_name)
         weights_payload = _parse_weights_query(weights)
-        effective_weights = _resolve_effective_weights(agent_name, agent_token, weights_payload)
-        response = _build_scoring_data_response(stock, effective_weights)
+        effective_weights, active_model = _resolve_effective_weights(
+            agent_name,
+            agent_token,
+            weights_payload,
+            normalized_model,
+        )
+        response = _build_scoring_data_response(stock, effective_weights, model_name=active_model)
         if weights_payload is not None:
-            _save_agent_weights(agent_name, agent_token, weights_payload)
+            _save_agent_weights(agent_name, agent_token, weights_payload, model_name=active_model)
         return response
 
     @app.post("/api/v1/scoring-data")
     def post_scoring_data(request: ScoringDataRequest) -> dict:
         _validate_agent(request.agent_name, request.agent_token)
+        normalized_model = _normalize_model_name(request.model_name)
         requested_weights = _weights_to_payload(request.weights)
-        effective_weights = _resolve_effective_weights(
+        effective_weights, active_model = _resolve_effective_weights(
             request.agent_name,
             request.agent_token,
             requested_weights,
+            normalized_model,
         )
         response = _build_scoring_data_response(
             request.stock,
             effective_weights,
+            model_name=active_model,
         )
         if requested_weights is not None:
-            _save_agent_weights(request.agent_name, request.agent_token, requested_weights)
+            _save_agent_weights(
+                request.agent_name,
+                request.agent_token,
+                requested_weights,
+                model_name=active_model,
+            )
         return response
 
     return app
@@ -410,39 +491,132 @@ def _sanitize_weights(weights: object) -> Optional[dict]:
         return None
 
 
-def _get_saved_agent_weights(agent_name: str, agent_token: str) -> Optional[dict]:
+def _normalize_agent_weights_record(record: object, fallback_agent_name: str) -> Optional[dict]:
+    if not isinstance(record, dict):
+        return None
+
+    agent_name = str(record.get("agent_name") or fallback_agent_name).strip()
+    agent_token = str(record.get("agent_token") or "").strip()
+    default_model = str(record.get("default_model") or _DEFAULT_MODEL_NAME).strip() or _DEFAULT_MODEL_NAME
+
+    models: Dict[str, Dict[str, object]] = {}
+    raw_models = record.get("models")
+    if isinstance(raw_models, dict):
+        for model_key, model_data in raw_models.items():
+            model_name = _normalize_model_name(str(model_key))
+            if model_name is None or not isinstance(model_data, dict):
+                continue
+            sanitized = _sanitize_weights(model_data.get("weights"))
+            if sanitized is None:
+                continue
+            models[model_name] = {
+                "weights": sanitized,
+                "updated_at": model_data.get("updated_at"),
+            }
+
+    # Backward compatibility for legacy one-model schema.
+    legacy_weights = _sanitize_weights(record.get("weights"))
+    if legacy_weights is not None and default_model not in models:
+        models[default_model] = {
+            "weights": legacy_weights,
+            "updated_at": record.get("updated_at"),
+        }
+
+    if default_model not in models:
+        if models:
+            default_model = next(iter(models.keys()))
+        else:
+            default_model = _DEFAULT_MODEL_NAME
+
+    return {
+        "agent_name": agent_name or fallback_agent_name,
+        "agent_token": agent_token,
+        "default_model": default_model,
+        "models": models,
+    }
+
+
+def _get_default_model_name(agent_name: str, agent_token: str) -> str:
     cleaned_name = agent_name.strip()
     cleaned_token = agent_token.strip()
     if not cleaned_name or not cleaned_token:
-        return None
+        return _DEFAULT_MODEL_NAME
 
     with _DB_LOCK:
         agents = _load_weights_agents()
         record = agents.get(cleaned_name)
 
-    if not isinstance(record, dict):
-        return None
-    expected_token = str(record.get("agent_token", ""))
+    normalized = _normalize_agent_weights_record(record, cleaned_name)
+    if not normalized:
+        return _DEFAULT_MODEL_NAME
+    expected_token = normalized.get("agent_token", "")
+    if not expected_token or not secrets.compare_digest(str(expected_token), cleaned_token):
+        return _DEFAULT_MODEL_NAME
+    return str(normalized.get("default_model") or _DEFAULT_MODEL_NAME)
+
+
+def _get_saved_agent_weights(
+    agent_name: str,
+    agent_token: str,
+    model_name: Optional[str] = None,
+) -> tuple[Optional[dict], str]:
+    cleaned_name = agent_name.strip()
+    cleaned_token = agent_token.strip()
+    active_model = model_name or _DEFAULT_MODEL_NAME
+    if not cleaned_name or not cleaned_token:
+        return None, active_model
+
+    with _DB_LOCK:
+        agents = _load_weights_agents()
+        record = agents.get(cleaned_name)
+
+    normalized = _normalize_agent_weights_record(record, cleaned_name)
+    if not normalized:
+        return None, active_model
+
+    expected_token = str(normalized.get("agent_token", ""))
     if not expected_token or not secrets.compare_digest(expected_token, cleaned_token):
-        return None
-    return _sanitize_weights(record.get("weights"))
+        return None, active_model
+
+    active_model = model_name or str(normalized.get("default_model") or _DEFAULT_MODEL_NAME)
+    model_entry = (normalized.get("models") or {}).get(active_model)
+    if not isinstance(model_entry, dict):
+        return None, active_model
+    weights = _sanitize_weights(model_entry.get("weights"))
+    return weights, active_model
 
 
-def _save_agent_weights(agent_name: str, agent_token: str, weights: dict) -> None:
+def _save_agent_weights(
+    agent_name: str,
+    agent_token: str,
+    weights: dict,
+    model_name: Optional[str] = None,
+) -> None:
     cleaned_name = agent_name.strip()
     cleaned_token = agent_token.strip()
     sanitized = _sanitize_weights(weights)
+    normalized_model = _normalize_model_name(model_name) if model_name else None
     if not cleaned_name or not cleaned_token or sanitized is None:
         return
 
     with _DB_LOCK:
         agents = _load_weights_agents()
-        agents[cleaned_name] = {
+        existing = _normalize_agent_weights_record(agents.get(cleaned_name), cleaned_name) or {
             "agent_name": cleaned_name,
             "agent_token": cleaned_token,
+            "default_model": _DEFAULT_MODEL_NAME,
+            "models": {},
+        }
+        active_model = normalized_model or str(existing.get("default_model") or _DEFAULT_MODEL_NAME)
+        existing["agent_name"] = cleaned_name
+        existing["agent_token"] = cleaned_token
+        existing["default_model"] = str(existing.get("default_model") or _DEFAULT_MODEL_NAME)
+        existing.setdefault("models", {})
+        existing["models"][active_model] = {
             "weights": sanitized,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        agents[cleaned_name] = existing
         _save_weights_agents(agents)
 
 
@@ -450,10 +624,20 @@ def _resolve_effective_weights(
     agent_name: str,
     agent_token: str,
     requested_weights: Optional[dict],
-) -> Optional[dict]:
+    model_name: Optional[str] = None,
+) -> tuple[Optional[dict], str]:
+    active_model = model_name or _get_default_model_name(agent_name, agent_token)
     if requested_weights is not None:
-        return requested_weights
-    return _get_saved_agent_weights(agent_name, agent_token)
+        return requested_weights, active_model
+
+    saved, resolved_model = _get_saved_agent_weights(
+        agent_name,
+        agent_token,
+        model_name=active_model,
+    )
+    if model_name and saved is None:
+        raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found for agent.")
+    return saved, resolved_model
 
 
 def _generate_unique_token(agents: Dict[str, Dict[str, str]]) -> str:
@@ -521,6 +705,7 @@ def _build_recommendation_response(
     stock: str,
     weights: Optional[dict] = None,
     verbose: bool = False,
+    model_name: Optional[str] = None,
 ) -> dict:
     stock = stock.strip()
     if not stock:
@@ -570,6 +755,7 @@ def _build_recommendation_response(
         "sentiment_analysis": analysis.get("sentiment_analysis"),
         "ai_recommendation": analysis.get("ai_recommendation"),
         "scoring_weights": analysis.get("scoring_weights"),
+        "model_name": model_name or _DEFAULT_MODEL_NAME,
         "generated_at": analysis.get("generated_at"),
     }
 
@@ -589,6 +775,7 @@ def _build_batch_recommendation_response(
     stocks: list[str],
     weights: Optional[dict] = None,
     verbose: bool = False,
+    model_name: Optional[str] = None,
 ) -> dict:
     if not stocks:
         raise HTTPException(status_code=400, detail="At least one stock is required")
@@ -602,6 +789,7 @@ def _build_batch_recommendation_response(
                 stock,
                 weights=weights,
                 verbose=verbose,
+                model_name=model_name,
             )
             result["status"] = "ok"
             results.append(result)
@@ -627,7 +815,11 @@ def _build_batch_recommendation_response(
     }
 
 
-def _build_scoring_data_response(stock: str, weights: Optional[dict] = None) -> dict:
+def _build_scoring_data_response(
+    stock: str,
+    weights: Optional[dict] = None,
+    model_name: Optional[str] = None,
+) -> dict:
     stock = stock.strip()
     if not stock:
         raise HTTPException(status_code=400, detail="Stock input is required")
@@ -660,6 +852,7 @@ def _build_scoring_data_response(stock: str, weights: Optional[dict] = None) -> 
         "snapshot": data.get("snapshot"),
         "scoring_inputs": data.get("scoring_inputs"),
         "scoring_weights": data.get("scoring_weights"),
+        "model_name": model_name or _DEFAULT_MODEL_NAME,
         "generated_at": data.get("generated_at"),
     }
 
