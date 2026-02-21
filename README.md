@@ -1,6 +1,7 @@
 ---
 layout: default
 title: iStockPick
+permalink: /
 ---
 
 # iStockPick
