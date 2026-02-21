@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Enhanced Web Server with In Construction Page - Fixed for External Access
-Binds to all interfaces (0.0.0.0) instead of just localhost
+iStockPick API Server
+Serves the frontend static files and the stock-analysis REST API.
+Binds to all interfaces (0.0.0.0) instead of just localhost.
 """
 
 import http.server
@@ -20,18 +21,18 @@ import urllib.request
 import urllib.parse
 from urllib.parse import urlparse, parse_qs
 
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_FRONTEND_DIR = os.path.realpath(
+    os.getenv("FRONTEND_DIR", os.path.join(_BACKEND_DIR, "..", "frontend"))
+)
+
 DEFAULT_STOCK_ANALYST_PATH = os.path.realpath(
-    os.getenv(
-        "DEFAULT_STOCK_ANALYST_PATH",
-        os.path.join(os.path.dirname(__file__), "stock-analyst"),
-    )
+    os.getenv("DEFAULT_STOCK_ANALYST_PATH", _BACKEND_DIR)
 )
 STOCK_ANALYST_PATH = os.path.realpath(
     os.environ.get("STOCK_ANALYST_PATH", DEFAULT_STOCK_ANALYST_PATH)
 )
-LEGACY_STOCK_ANALYST_PATH = os.path.realpath(
-    os.path.join(os.path.dirname(__file__), "stock-analyst")
-)
+LEGACY_STOCK_ANALYST_PATH = _BACKEND_DIR
 ANALYSIS_RUNTIME_PYTHON = os.getenv(
     "ANALYSIS_RUNTIME_PYTHON",
     "/tmp/stock-analyst-venv/bin/python3",
@@ -253,10 +254,10 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         return os.path.join(LEGACY_STOCK_ANALYST_PATH, "data", "agents_db.txt")
 
     def _weights_db_path(self):
-        return os.path.join(os.path.dirname(__file__), "stock-analyst", "data", "weights.txt")
+        return os.path.join(_BACKEND_DIR, "data", "weights.txt")
 
     def _portfolio_db_path(self):
-        return os.path.join(os.path.dirname(__file__), "stock-analyst", "data", "portfolio.txt")
+        return os.path.join(_BACKEND_DIR, "data", "portfolio.txt")
 
     def _load_agents(self):
         db_path = self._agents_db_path()
@@ -1142,11 +1143,23 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         )
     
     def serve_construction_page(self):
-        """Serve the in construction page"""
+        """Serve the frontend index.html from disk."""
+        index_path = os.path.join(_FRONTEND_DIR, "index.html")
+        if not os.path.isfile(index_path):
+            self.send_json(404, {"error": "Frontend index.html not found"})
+            return
         self.send_response(200)
         self.send_header('Content-type', 'text/html')
         self.end_headers()
-        
+        with open(index_path, 'r', encoding='utf-8') as f:
+            self.wfile.write(f.read().encode())
+
+    def _serve_construction_page_legacy(self):
+        """Legacy embedded HTML -- kept for reference only."""
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+
         html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1779,9 +1792,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
     def serve_skill_markdown(self):
         candidates = [
+            os.path.join(_BACKEND_DIR, '..', 'SKILL.md'),
+            os.path.join(_BACKEND_DIR, 'SKILL.md'),
             os.path.expanduser('~/projects/public/stock-analyst/SKILL.md'),
-            os.path.join(os.path.dirname(__file__), 'SKILL.md'),
-            os.path.join(os.path.dirname(__file__), 'stock-analyst', 'SKILL.md'),
         ]
 
         for skill_path in candidates:
@@ -1996,35 +2009,33 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(html.encode())
 
 def main():
-    """Main function to run the server"""
-    PORT = 8001
+    """Main function to run the server."""
+    PORT = int(os.getenv("PORT", "8001"))
     Handler = ConstructionHandler
-    
-    print(f"🚀 Starting In Construction Web Server on port {PORT}")
-    print(f"🌐 Server accessible at: http://0.0.0.0:{PORT}/")
-    print(f"🏗️  In Construction page: http://0.0.0.0:{PORT}/")
-    print(f"💚 Health check: http://0.0.0.0:{PORT}/health")
-    print(f"📊 Status: http://0.0.0.0:{PORT}/status")
-    print("="*60)
-    
+
+    print(f"iStockPick server starting on port {PORT}")
+    print(f"  Frontend dir : {_FRONTEND_DIR}")
+    print(f"  Backend dir  : {_BACKEND_DIR}")
+    print(f"  http://localhost:{PORT}/")
+    print(f"  http://localhost:{PORT}/health")
+    print("=" * 60)
+
     try:
-        # Bind to all interfaces (0.0.0.0) instead of localhost
         class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             daemon_threads = True
             allow_reuse_address = True
 
         with ThreadingHTTPServer(("0.0.0.0", PORT), Handler) as httpd:
-            print("✅ Server started successfully on all interfaces!")
-            print("External access available at: http://107.3.167.1:8080")
-            print("Press Ctrl+C to stop the server")
+            print(f"Server listening on 0.0.0.0:{PORT}")
+            print("Press Ctrl+C to stop")
             httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n🛑 Server stopped by user")
+        print("\nServer stopped")
     except OSError as e:
-        print(f"❌ Port {PORT} is already in use. Try a different port.")
+        print(f"Port {PORT} is already in use. Try a different port.")
         print(f"Error: {e}")
     except Exception as e:
-        print(f"❌ Server error: {e}")
+        print(f"Server error: {e}")
 
 if __name__ == "__main__":
     main()

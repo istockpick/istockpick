@@ -39,17 +39,19 @@ AI-powered stock analysis platform that delivers BUY / SELL / HOLD recommendatio
 
 ```
 ┌────────────────────────────────────┐
-│  construction_server_fixed.py      │  Port 8001 — HTML UI + API proxy
+│  frontend/index.html               │  Static HTML/CSS/JS (GitHub Pages)
 └──────────────┬─────────────────────┘
-               │ proxies /api/* requests
+               │ fetch /api/* and /lookup, /analyze
                ▼
 ┌────────────────────────────────────┐
-│  stock_analyst/api.py (FastAPI)    │  Port 8000 — REST API
+│  backend/server.py                 │  Port 8001 — serves frontend + API
 ├────────────────────────────────────┤
-│  web_analyzer.py                   │  Orchestrates analysis pipeline
-│  technical.py                      │  Technical indicators
-│  fundamental.py                    │  Fundamental metrics
-│  config.py                         │  Environment & constants
+│  backend/stock_analyst/api.py      │  FastAPI REST API (port 8000)
+│  backend/stock_analyst/            │
+│    web_analyzer.py                 │  Orchestrates analysis pipeline
+│    technical.py                    │  Technical indicators
+│    fundamental.py                  │  Fundamental metrics
+│    config.py                       │  Environment & constants
 └──────────────┬─────────────────────┘
                │
    ┌───────────┼───────────┐
@@ -64,7 +66,7 @@ AI-powered stock analysis platform that delivers BUY / SELL / HOLD recommendatio
           OpenAI API                   ← AI sentiment scoring
 ```
 
-Data is persisted in flat JSON files under `stock-analyst/data/`.
+Data is persisted in flat JSON files under `backend/data/`.
 
 ---
 
@@ -73,7 +75,8 @@ Data is persisted in flat JSON files under `stock-analyst/data/`.
 | Layer | Technology |
 |---|---|
 | API Framework | FastAPI + Uvicorn |
-| Web Server | Python `http.server` (construction server) |
+| Web Server | Python `http.server` (`backend/server.py`) |
+| Frontend | Static HTML / CSS / JS (deployed via GitHub Pages) |
 | Market Data | yfinance, Alpaca Markets API, Stooq |
 | Sentiment | X/Twitter API v2, Reddit API, RSS feeds |
 | AI Scoring | OpenAI API (GPT-4o-mini) |
@@ -87,32 +90,35 @@ Data is persisted in flat JSON files under `stock-analyst/data/`.
 
 ```
 istockpick/
+├── frontend/
+│   └── index.html                   # Static web UI (stock lookup, leaderboard)
+│
+├── backend/
+│   ├── server.py                    # HTTP server — serves frontend + API
+│   ├── requirements.txt             # Python dependencies
+│   ├── stock_analyst/
+│   │   ├── __init__.py
+│   │   ├── api.py                   # FastAPI REST API
+│   │   ├── config.py                # Environment variables & constants
+│   │   ├── fundamental.py           # Fundamental analysis
+│   │   ├── technical.py             # Technical indicators
+│   │   └── web_analyzer.py          # Analysis orchestrator
+│   ├── scripts/
+│   │   ├── process_tweets_fixed.py
+│   │   └── movers_catalyst_fixed.py
+│   ├── samples/
+│   │   ├── istockpick_reco_scan.py  # Scan S&P 500 / DOW / NASDAQ
+│   │   └── istockpick_reco_detail.py
+│   └── data/
+│       ├── agents_db.txt            # Agent credentials
+│       ├── weights.txt              # Per-agent model weights (gitignored)
+│       └── portfolio.txt            # Portfolio positions & performance
+│
+├── .github/workflows/
+│   └── jekyll-gh-pages.yml          # Deploys frontend/ to GitHub Pages
 ├── README.md
 ├── SKILL.md                         # Deployment playbook
-├── construction_server.py           # HTTP server (legacy)
-├── construction_server_fixed.py     # HTTP server (production)
-│
-└── stock-analyst/
-    ├── stock_analyst/
-    │   ├── __init__.py
-    │   ├── api.py                   # FastAPI REST API
-    │   ├── config.py                # Environment variables & constants
-    │   ├── fundamental.py           # Fundamental analysis
-    │   ├── technical.py             # Technical indicators
-    │   └── web_analyzer.py          # Analysis orchestrator
-    │
-    ├── scripts/
-    │   ├── process_tweets_fixed.py
-    │   └── movers_catalyst_fixed.py
-    │
-    ├── samples/
-    │   ├── istockpick_reco_scan.py   # Scan S&P 500 / DOW / NASDAQ
-    │   └── istockpick_reco_detail.py # Detailed single-symbol analysis
-    │
-    └── data/
-        ├── agents_db.txt            # Agent credentials
-        ├── weights.txt              # Per-agent model weights
-        └── portfolio.txt            # Portfolio positions & performance
+└── .gitignore
 ```
 
 ---
@@ -122,30 +128,54 @@ istockpick/
 ### Prerequisites
 
 - Python 3.10+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
 - (Optional) Alpaca, Twitter/X, and OpenAI API keys for full functionality
 
 ### Installation
 
+Using **uv** (recommended):
+
 ```bash
-cd stock-analyst
+cd backend
+uv sync
+```
+
+Using **pip**:
+
+```bash
+cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install fastapi uvicorn yfinance pydantic python-dotenv pandas numpy
+pip install -r requirements.txt
 ```
 
-### Running the API Server
+### Running Locally
+
+Start the server from the `backend/` directory. It serves the frontend UI and the API on a single port:
 
 ```bash
-cd stock-analyst
-uvicorn stock_analyst.api:app --host 0.0.0.0 --port 8000
+cd backend
+uv run server.py
+# Frontend:  http://localhost:8001/
+# Health:    http://localhost:8001/health
+# API:       http://localhost:8001/api/v1/...
 ```
 
-### Running the Web Server (HTML UI + API Proxy)
+Or without uv:
 
 ```bash
-python3 construction_server_fixed.py
-# Serves on http://0.0.0.0:8001
+cd backend
+python server.py
+```
+
+The server reads `frontend/index.html` from disk, so any edits to the HTML take effect on the next page refresh — no rebuild step needed.
+
+### Running the FastAPI Server Directly
+
+```bash
+cd backend
+uv run uvicorn stock_analyst.api:app --host 0.0.0.0 --port 8000
 ```
 
 ---
@@ -172,9 +202,9 @@ OPENAI_MEDIA_MODEL=gpt-4o-mini        # default
 # News (optional)
 NEWS_API_KEY=...
 
-# Runtime Paths (optional)
-STOCK_ANALYST_PATH=...                  # custom path to stock-analyst/
-ANALYSIS_RUNTIME_PYTHON=...             # python interpreter override
+# Server (optional)
+PORT=8001                               # default server port
+FRONTEND_DIR=...                        # override frontend path
 ```
 
 Alpaca credentials can also be placed in `~/.configuration/alpaca/credentials.json`.
@@ -269,7 +299,7 @@ Weight resolution order: request override > saved agent/model weights > defaults
 
 ## Sample Scripts
 
-Run from the `stock-analyst/` directory:
+Run from the `backend/` directory:
 
 ```bash
 # Detailed recommendation for specific symbols
@@ -287,17 +317,19 @@ The production instance runs at `api.istockpick.ai` behind an Nginx reverse prox
 
 ```bash
 # Validate before deploying
+cd backend
 python -m py_compile stock_analyst/api.py
 python -m py_compile stock_analyst/web_analyzer.py
-python -m py_compile ../construction_server_fixed.py
+python -m py_compile server.py
 
-# Start the FastAPI backend
-cd stock-analyst
+# Start the server (serves frontend + API)
+python server.py
+
+# Or start the FastAPI backend only
 uvicorn stock_analyst.api:app --host 0.0.0.0 --port 8000
-
-# Or start the construction server (serves HTML UI + proxies API)
-python3 construction_server_fixed.py   # port 8001
 ```
+
+The frontend is also deployed to GitHub Pages automatically on push to `main` via the workflow in `.github/workflows/`.
 
 See `SKILL.md` for the full deployment playbook including smoke tests.
 

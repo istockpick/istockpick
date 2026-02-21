@@ -1,6 +1,6 @@
 ---
 name: stock-analyst-deploy
-description: Build, validate, and deploy the stock-analyst API in istockpick, including recommendation/scoring-data endpoints, verbose mode, and construction-server runtime wiring.
+description: Build, validate, and deploy the iStockPick API from the backend/ directory, including recommendation/scoring-data endpoints, verbose mode, and server runtime wiring.
 ---
 
 # Stock Analyst Deploy Skill
@@ -55,12 +55,12 @@ Supports optional weights override:
 
 1. `GET /api/v1/weights` returns all modifiable keys with default/min/max and threshold rules.
 2. Per-agent model persistence is stored in:
-- `stock-analyst/data/weights.txt`
+- `backend/data/weights.txt`
 3. Model portfolio metadata is stored in:
-- `stock-analyst/data/portfolio.txt`
+- `backend/data/portfolio.txt`
 4. Recommendation/scoring calls use weights in this order:
 - Request `weights` override (if provided), and persist it for the selected model.
-- Saved agent/model weights from `stock-analyst/data/weights.txt`.
+- Saved agent/model weights from `backend/data/weights.txt`.
 - Hardcoded defaults.
 5. Default-model behavior:
 - If `model_name` is omitted, updates/read apply to the agent's `default` model.
@@ -100,13 +100,21 @@ Dedicated portfolio persistence endpoint:
 
 ## Setup
 
-Run from `stock-analyst/`.
+Run from `backend/`.
+
+Using **uv** (recommended):
+
+```bash
+uv sync
+```
+
+Using **pip**:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install fastapi uvicorn yfinance pydantic python-dotenv
+pip install -r requirements.txt
 ```
 
 Optional env for Alpaca provider:
@@ -122,15 +130,16 @@ ALPACA_DATA_BASE_URL=https://data.alpaca.markets
 1. Compile checks.
 
 ```bash
+cd backend
 python -m py_compile stock_analyst/api.py
 python -m py_compile stock_analyst/web_analyzer.py
-python -m py_compile ../construction_server.py
-python -m py_compile ../construction_server_fixed.py
+python -m py_compile server.py
 ```
 
 2. Route checks for package app.
 
 ```bash
+cd backend
 python - <<'PY'
 from stock_analyst.api import app
 paths = {r.path for r in app.routes}
@@ -148,11 +157,11 @@ PY
 
 ## Runtime Notes
 
-1. If domain traffic is served by `construction_server.py` or `construction_server_fixed.py`, restart that process after changes.
+1. If domain traffic is served by `backend/server.py`, restart that process after changes.
 2. If traffic is served by FastAPI directly, run:
 
 ```bash
-cd stock-analyst
+cd backend
 uvicorn stock_analyst.api:app --host 0.0.0.0 --port 8000
 ```
 
@@ -216,7 +225,7 @@ curl -X POST "http://api.istockpick.ai/api/v1/portfolio" \
 
 ## Sample Scripts
 
-Run from `stock-analyst/`.
+Run from `backend/`.
 
 1. Detail call sample.
 
@@ -241,4 +250,4 @@ python3 samples/istockpick_reco_scan.py
 7. `/api/v1/portfolio` supports GET by `agent_name` + `model_name`.
 8. `/api/v1/portfolio` supports authenticated POST updates for portfolio positions.
 9. Authenticated calls succeed with registered agent credentials.
-10. Compile checks pass for analyzer API and construction server entrypoints.
+10. Compile checks pass for analyzer API and server entrypoint.

@@ -1,0 +1,14 @@
+[project]
+name = "istockpick-backend"
+version = "1.0.0"
+description = "iStockPick AI-powered stock analysis API"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "yfinance",
+    "pydantic",
+    "python-dotenv",
+    "pandas",
+    "numpy",
+]

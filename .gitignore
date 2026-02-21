@@ -2,10 +2,11 @@
 construction.log
 
 # Local persisted runtime weights (contains agent tokens)
-stock-analyst/data/weights.txt
+backend/data/weights.txt
 
 # Python
 __pycache__/
 *.pyc
 .venv/
 .env
+.python-version
