@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Enhanced Web Server with In Construction Page - Fixed for External Access
-Binds to all interfaces (0.0.0.0) instead of just localhost or not
+Binds to all interfaces (0.0.0.0) instead of just localhost
 """
 
 import http.server
@@ -20,7 +20,12 @@ import urllib.request
 import urllib.parse
 from urllib.parse import urlparse, parse_qs
 
-DEFAULT_STOCK_ANALYST_PATH = "/Users/richliu/projects/private/istockpick/stock-analyst"
+DEFAULT_STOCK_ANALYST_PATH = os.path.realpath(
+    os.getenv(
+        "DEFAULT_STOCK_ANALYST_PATH",
+        os.path.join(os.path.dirname(__file__), "stock-analyst"),
+    )
+)
 STOCK_ANALYST_PATH = os.path.realpath(
     os.environ.get("STOCK_ANALYST_PATH", DEFAULT_STOCK_ANALYST_PATH)
 )
