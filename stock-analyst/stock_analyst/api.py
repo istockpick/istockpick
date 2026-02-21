@@ -753,6 +753,8 @@ def _build_recommendation_response(
         "company": analysis.get("company"),
         "stock_analysis": analysis.get("stock_analysis"),
         "sentiment_analysis": analysis.get("sentiment_analysis"),
+        "social_analysis": analysis.get("social_analysis"),
+        "media_analysis": analysis.get("media_analysis"),
         "ai_recommendation": analysis.get("ai_recommendation"),
         "scoring_weights": analysis.get("scoring_weights"),
         "model_name": model_name or _DEFAULT_MODEL_NAME,

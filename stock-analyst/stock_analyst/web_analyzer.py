@@ -861,6 +861,26 @@ def generate_full_analysis(symbol: str, weights: Optional[dict] = None) -> dict:
     snapshot = get_stock_snapshot(symbol)
     sentiment = get_sentiment(snapshot, active_weights)
     ai_reco = get_ai_recommendation(snapshot, sentiment, active_weights)
+    try:
+        media_analysis = generate_media_analysis(snapshot["symbol"], company=snapshot.get("name"))
+    except Exception as exc:
+        media_analysis = {
+            "symbol": snapshot["symbol"],
+            "company": snapshot.get("name", snapshot["symbol"]),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "retrieval_only": True,
+            "summary": "Social analysis unavailable.",
+            "error": str(exc),
+            "sources": {"x": {}, "reddit": {}, "major_news": {}},
+            "sub_scores": {
+                "x": {"positive_score": 0, "negative_score": 0},
+                "reddit": {"positive_score": 0, "negative_score": 0},
+                "major_news": {"positive_score": 0, "negative_score": 0},
+            },
+            "counts": {"x": 0, "reddit": 0, "major_news": 0, "total": 0},
+            "media_trend": {"label": "unknown", "score": None, "reason": "Media retrieval failed."},
+            "debug": {"ai_enabled": _MEDIA_AI_ENABLED, "openai_reachable": False},
+        }
 
     stock_summary = {
         "summary": f"${snapshot['price']:.2f} • Trend: {snapshot['trend']} • 1D change: {snapshot['change_pct']:.2f}%",
@@ -872,6 +892,8 @@ def generate_full_analysis(symbol: str, weights: Optional[dict] = None) -> dict:
         "company": snapshot["name"],
         "stock_analysis": stock_summary,
         "sentiment_analysis": sentiment,
+        "social_analysis": media_analysis,
+        "media_analysis": media_analysis,
         "ai_recommendation": ai_reco,
         "scoring_weights": active_weights,
         "generated_at": datetime.now(timezone.utc).isoformat(),

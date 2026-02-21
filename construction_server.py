@@ -621,6 +621,8 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 "company": analysis.get("company"),
                 "stock_analysis": analysis.get("stock_analysis"),
                 "sentiment_analysis": analysis.get("sentiment_analysis"),
+                "social_analysis": analysis.get("social_analysis"),
+                "media_analysis": analysis.get("media_analysis"),
                 "ai_recommendation": analysis.get("ai_recommendation"),
                 "scoring_weights": analysis.get("scoring_weights"),
                 "model_name": model_name or self.DEFAULT_MODEL_NAME,
@@ -1427,7 +1429,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         .analysis-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            grid-template-columns: repeat(2, minmax(220px, 1fr));
             gap: 0.75rem;
             margin-top: 0.75rem;
         }}
@@ -1437,6 +1439,21 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             border-radius: 10px;
             padding: 0.75rem;
             font-size: 0.9rem;
+        }}
+
+        .analysis-item.action-item {{
+            grid-column: 1 / -1;
+            text-align: center;
+            font-size: 0.96rem;
+        }}
+
+        @media (max-width: 700px) {{
+            .analysis-grid {{
+                grid-template-columns: 1fr;
+            }}
+            .analysis-item.action-item {{
+                grid-column: auto;
+            }}
         }}
 
         .status {{
@@ -1730,10 +1747,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 }}
 
                 analysisGrid.innerHTML = `
-                    <div class="analysis-item"><strong>Stock analysis</strong><br>${{analysis.stock_analysis.summary}}</div>
-                    <div class="analysis-item"><strong>Sentiment analysis</strong><br>${{analysis.sentiment_analysis.summary}}</div>
-                    <div class="analysis-item"><strong>AI recommendation</strong><br>${{analysis.ai_recommendation.summary}}</div>
-                    <div class="analysis-item"><strong>Action</strong><br>${{analysis.ai_recommendation.action}} (confidence: ${{analysis.ai_recommendation.confidence}}%)</div>
+                    <div class="analysis-item action-item"><strong>Action</strong><br>${{analysis.ai_recommendation.action}} (confidence: ${{analysis.ai_recommendation.confidence}}%)</div>
+                    <div class="analysis-item"><strong>Trend Analysis</strong><br>${{analysis.stock_analysis.summary}}</div>
+                    <div class="analysis-item"><strong>Sentiment Analysis</strong><br>${{analysis.sentiment_analysis.summary}}</div>
+                    <div class="analysis-item"><strong>Social Analysis</strong><br>${{(analysis.social_analysis && analysis.social_analysis.summary) || (analysis.media_analysis && analysis.media_analysis.summary) || 'Social analysis unavailable.'}}</div>
+                    <div class="analysis-item"><strong>AI Recommendation</strong><br>${{analysis.ai_recommendation.summary}}</div>
                 `;
 
                 const generatedAt = analysis.generated_at ? new Date(analysis.generated_at) : null;
