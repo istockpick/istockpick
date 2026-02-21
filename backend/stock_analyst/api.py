@@ -9,7 +9,7 @@ from typing import Dict, Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, ValidationError
 
-from .web_analyzer import generate_full_analysis, generate_scoring_data
+from .web_analyzer import generate_full_analysis, generate_scoring_data, AssetType
 
 _DB_LOCK = threading.Lock()
 _MAX_STOCK_INPUT_LEN = 120
@@ -24,6 +24,10 @@ class RecommendationRequest(BaseModel):
     stock: str = Field(..., description="Ticker symbol or company name")
     agent_name: str = Field(..., description="Registered agent name")
     agent_token: str = Field(..., description="Registered agent token")
+    asset_type: str = Field(
+        default="stock",
+        description="Asset type: stock, crypto, option, or future",
+    )
     model_name: Optional[str] = Field(
         default=None,
         description="Optional personalized model name",
@@ -50,6 +54,10 @@ class BatchRecommendationRequest(BaseModel):
     stocks: list[str] = Field(..., description="List of ticker symbols or company names")
     agent_name: str = Field(..., description="Registered agent name")
     agent_token: str = Field(..., description="Registered agent token")
+    asset_type: str = Field(
+        default="stock",
+        description="Asset type: stock, crypto, option, or future",
+    )
     model_name: Optional[str] = Field(
         default=None,
         description="Optional personalized model name",
@@ -72,6 +80,10 @@ class ScoringDataRequest(BaseModel):
     stock: str = Field(..., description="Ticker symbol or company name")
     agent_name: str = Field(..., description="Registered agent name")
     agent_token: str = Field(..., description="Registered agent token")
+    asset_type: str = Field(
+        default="stock",
+        description="Asset type: stock, crypto, option, or future",
+    )
     model_name: Optional[str] = Field(
         default=None,
         description="Optional personalized model name",
@@ -171,16 +183,47 @@ def _looks_like_ticker(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9\.\-]{0,9}", value.strip()))
 
 
-def _resolve_symbol(stock: str) -> Optional[str]:
+def _looks_like_multi_asset_ticker(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\.\-=]{0,14}", value.strip()))
+
+
+def _detect_asset_type(symbol: str) -> str:
+    s = (symbol or "").strip().upper()
+    if re.fullmatch(r"[A-Z0-9]+=F", s):
+        return "future"
+    if re.fullmatch(r"[A-Z0-9]+-USD", s):
+        return "crypto"
+    return "stock"
+
+
+def _resolve_symbol(stock: str, asset_type: str = "stock") -> Optional[str]:
     candidate = stock.strip()
     if not candidate or len(candidate) > _MAX_STOCK_INPUT_LEN:
         return None
+
+    at = (asset_type or "stock").lower()
+
+    if at == "crypto":
+        from .crypto import normalize_crypto_symbol, is_crypto_symbol
+        if is_crypto_symbol(candidate):
+            return normalize_crypto_symbol(candidate)
+        return normalize_crypto_symbol(candidate.upper())
+
+    if at == "future":
+        from .futures import normalize_futures_symbol, is_futures_symbol
+        if is_futures_symbol(candidate):
+            return normalize_futures_symbol(candidate)
+        return normalize_futures_symbol(candidate.upper())
+
+    detected = _detect_asset_type(candidate)
+    if detected in ("crypto", "future"):
+        return candidate.upper()
 
     if _looks_like_ticker(candidate):
         return candidate.upper()
 
     try:
-        import yfinance as yf  # Optional runtime dependency for name lookup.
+        import yfinance as yf
 
         search = yf.Search(query=candidate, max_results=5, news_count=0)
         quotes = search.quotes or []
@@ -214,6 +257,10 @@ def create_app() -> FastAPI:
         stock: str = Query(..., description="Ticker symbol or company name"),
         agent_name: str = Query(..., description="Registered agent name"),
         agent_token: str = Query(..., description="Registered agent token"),
+        asset_type: str = Query(
+            default="stock",
+            description="Asset type: stock, crypto, option, or future",
+        ),
         model_name: Optional[str] = Query(
             default=None,
             description="Optional personalized model name",
@@ -246,6 +293,7 @@ def create_app() -> FastAPI:
             effective_weights,
             verbose=verbose_flag,
             model_name=active_model,
+            asset_type=asset_type,
         )
         if weights_payload is not None:
             _save_agent_weights(agent_name, agent_token, weights_payload, model_name=active_model)
@@ -268,6 +316,7 @@ def create_app() -> FastAPI:
             effective_weights,
             verbose=verbose_flag,
             model_name=active_model,
+            asset_type=request.asset_type,
         )
         if requested_weights is not None:
             _save_agent_weights(
@@ -283,6 +332,10 @@ def create_app() -> FastAPI:
         stocks: str = Query(..., description="Comma-separated ticker symbols or company names"),
         agent_name: str = Query(..., description="Registered agent name"),
         agent_token: str = Query(..., description="Registered agent token"),
+        asset_type: str = Query(
+            default="stock",
+            description="Asset type: stock, crypto, option, or future",
+        ),
         model_name: Optional[str] = Query(
             default=None,
             description="Optional personalized model name",
@@ -316,6 +369,7 @@ def create_app() -> FastAPI:
             effective_weights,
             verbose=verbose_flag,
             model_name=active_model,
+            asset_type=asset_type,
         )
         if weights_payload is not None:
             _save_agent_weights(agent_name, agent_token, weights_payload, model_name=active_model)
@@ -338,6 +392,7 @@ def create_app() -> FastAPI:
             effective_weights,
             verbose=verbose_flag,
             model_name=active_model,
+            asset_type=request.asset_type,
         )
         if requested_weights is not None:
             _save_agent_weights(
@@ -353,6 +408,10 @@ def create_app() -> FastAPI:
         stock: str = Query(..., description="Ticker symbol or company name"),
         agent_name: str = Query(..., description="Registered agent name"),
         agent_token: str = Query(..., description="Registered agent token"),
+        asset_type: str = Query(
+            default="stock",
+            description="Asset type: stock, crypto, option, or future",
+        ),
         model_name: Optional[str] = Query(
             default=None,
             description="Optional personalized model name",
@@ -371,7 +430,7 @@ def create_app() -> FastAPI:
             weights_payload,
             normalized_model,
         )
-        response = _build_scoring_data_response(stock, effective_weights, model_name=active_model)
+        response = _build_scoring_data_response(stock, effective_weights, model_name=active_model, asset_type=asset_type)
         if weights_payload is not None:
             _save_agent_weights(agent_name, agent_token, weights_payload, model_name=active_model)
         return response
@@ -391,6 +450,7 @@ def create_app() -> FastAPI:
             request.stock,
             effective_weights,
             model_name=active_model,
+            asset_type=request.asset_type,
         )
         if requested_weights is not None:
             _save_agent_weights(
@@ -400,6 +460,67 @@ def create_app() -> FastAPI:
                 model_name=active_model,
             )
         return response
+
+    @app.get("/api/v1/congress/trades")
+    def get_congress_trades(
+        year: Optional[int] = Query(default=None, description="Year to fetch trades for"),
+        chamber: str = Query(default="all", description="senate, house, or all"),
+        symbol: Optional[str] = Query(default=None, description="Filter by ticker symbol"),
+        politician: Optional[str] = Query(default=None, description="Filter by politician name"),
+    ) -> dict:
+        from .congress import fetch_trades
+        import datetime as _dt
+
+        effective_year = year or _dt.datetime.now().year
+        trades = fetch_trades(year=effective_year, chamber=chamber)
+
+        if symbol:
+            sym_upper = symbol.strip().upper()
+            trades = [t for t in trades if t.get("symbol") == sym_upper]
+        if politician:
+            pol_lower = politician.strip().lower()
+            trades = [t for t in trades if pol_lower in (t.get("politician") or "").lower()]
+
+        return {
+            "year": effective_year,
+            "chamber": chamber,
+            "total": len(trades),
+            "trades": trades[:200],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/api/v1/congress/roi")
+    def get_congress_roi(
+        year: Optional[int] = Query(default=None, description="Year for ROI report"),
+        chamber: str = Query(default="all", description="senate, house, or all"),
+        top_n: int = Query(default=10, ge=1, le=50, description="Number of top performers"),
+    ) -> dict:
+        from .congress import yearly_report
+        import datetime as _dt
+
+        effective_year = year or _dt.datetime.now().year
+        return yearly_report(year=effective_year, chamber=chamber, top_n=top_n)
+
+    @app.get("/api/v1/congress/seasonal")
+    def get_congress_seasonal(
+        year: Optional[int] = Query(default=None, description="Year for seasonal analysis"),
+        chamber: str = Query(default="all", description="senate, house, or all"),
+    ) -> dict:
+        from .congress import fetch_trades, compute_trade_roi, seasonal_summary
+        import datetime as _dt
+
+        effective_year = year or _dt.datetime.now().year
+        trades = fetch_trades(year=effective_year, chamber=chamber)
+        trades = compute_trade_roi(trades)
+        return seasonal_summary(trades, year=effective_year)
+
+    @app.get("/api/v1/options/chain")
+    def get_options_chain_endpoint(
+        symbol: str = Query(..., description="Underlying stock symbol"),
+        expiry: Optional[str] = Query(default=None, description="Expiration date (YYYY-MM-DD)"),
+    ) -> dict:
+        from .options import get_options_chain
+        return get_options_chain(symbol, expiry=expiry)
 
     return app
 
@@ -706,6 +827,7 @@ def _build_recommendation_response(
     weights: Optional[dict] = None,
     verbose: bool = False,
     model_name: Optional[str] = None,
+    asset_type: str = "stock",
 ) -> dict:
     stock = stock.strip()
     if not stock:
@@ -713,18 +835,19 @@ def _build_recommendation_response(
     if len(stock) > _MAX_STOCK_INPUT_LEN:
         raise HTTPException(status_code=400, detail="Stock input is too long")
 
-    resolved_symbol = _resolve_symbol(stock)
+    at = (asset_type or "stock").lower()
+    resolved_symbol = _resolve_symbol(stock, asset_type=at)
     if not resolved_symbol:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Could not resolve stock input to a ticker. "
-                "Provide a valid ticker (for example, AAPL) or a company name."
+                "Could not resolve input to a ticker. "
+                "Provide a valid ticker (for example, AAPL, BTC-USD, ES=F) or a company name."
             ),
         )
 
     try:
-        analysis = generate_full_analysis(resolved_symbol, weights=weights)
+        analysis = generate_full_analysis(resolved_symbol, weights=weights, asset_type=at)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -750,6 +873,7 @@ def _build_recommendation_response(
     return {
         "input": stock,
         "resolved_symbol": resolved_symbol,
+        "asset_type": at,
         "company": analysis.get("company"),
         "stock_analysis": analysis.get("stock_analysis"),
         "sentiment_analysis": analysis.get("sentiment_analysis"),
@@ -778,6 +902,7 @@ def _build_batch_recommendation_response(
     weights: Optional[dict] = None,
     verbose: bool = False,
     model_name: Optional[str] = None,
+    asset_type: str = "stock",
 ) -> dict:
     if not stocks:
         raise HTTPException(status_code=400, detail="At least one stock is required")
@@ -792,6 +917,7 @@ def _build_batch_recommendation_response(
                 weights=weights,
                 verbose=verbose,
                 model_name=model_name,
+                asset_type=asset_type,
             )
             result["status"] = "ok"
             results.append(result)
@@ -821,6 +947,7 @@ def _build_scoring_data_response(
     stock: str,
     weights: Optional[dict] = None,
     model_name: Optional[str] = None,
+    asset_type: str = "stock",
 ) -> dict:
     stock = stock.strip()
     if not stock:
@@ -828,18 +955,19 @@ def _build_scoring_data_response(
     if len(stock) > _MAX_STOCK_INPUT_LEN:
         raise HTTPException(status_code=400, detail="Stock input is too long")
 
-    resolved_symbol = _resolve_symbol(stock)
+    at = (asset_type or "stock").lower()
+    resolved_symbol = _resolve_symbol(stock, asset_type=at)
     if not resolved_symbol:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Could not resolve stock input to a ticker. "
-                "Provide a valid ticker (for example, AAPL) or a company name."
+                "Could not resolve input to a ticker. "
+                "Provide a valid ticker (for example, AAPL, BTC-USD, ES=F) or a company name."
             ),
         )
 
     try:
-        data = generate_scoring_data(resolved_symbol, weights=weights)
+        data = generate_scoring_data(resolved_symbol, weights=weights, asset_type=at)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -849,6 +977,7 @@ def _build_scoring_data_response(
     return {
         "input": stock,
         "resolved_symbol": resolved_symbol,
+        "asset_type": at,
         "company": data.get("company"),
         "price": data.get("price"),
         "snapshot": data.get("snapshot"),

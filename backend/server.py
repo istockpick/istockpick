@@ -54,6 +54,36 @@ SCORING_WEIGHT_DEFAULTS = {
     "action_sell_threshold": 35.0,
 }
 
+ASSET_TYPE_WEIGHT_DEFAULTS = {
+    "stock": SCORING_WEIGHT_DEFAULTS,
+    "crypto": {
+        "base_score": 50.0, "trend_bullish": 18.0, "trend_bearish": 18.0,
+        "high_volume_bonus": 10.0, "ma_bullish_bonus": 7.0, "ma_bearish_penalty": 7.0,
+        "price_above_ma_bonus": 5.0, "price_below_ma_penalty": 5.0,
+        "volume_ratio_threshold": 2.0, "sentiment_buy_threshold": 65.0,
+        "sentiment_sell_threshold": 35.0, "action_buy_threshold": 65.0,
+        "action_sell_threshold": 35.0,
+    },
+    "future": {
+        "base_score": 50.0, "trend_bullish": 20.0, "trend_bearish": 20.0,
+        "high_volume_bonus": 10.0, "ma_bullish_bonus": 6.0, "ma_bearish_penalty": 6.0,
+        "price_above_ma_bonus": 5.0, "price_below_ma_penalty": 5.0,
+        "volume_ratio_threshold": 1.8, "sentiment_buy_threshold": 65.0,
+        "sentiment_sell_threshold": 35.0, "action_buy_threshold": 65.0,
+        "action_sell_threshold": 35.0,
+    },
+    "option": {
+        "base_score": 50.0, "trend_bullish": 12.0, "trend_bearish": 12.0,
+        "high_volume_bonus": 6.0, "ma_bullish_bonus": 5.0, "ma_bearish_penalty": 5.0,
+        "price_above_ma_bonus": 4.0, "price_below_ma_penalty": 4.0,
+        "volume_ratio_threshold": 1.5, "sentiment_buy_threshold": 65.0,
+        "sentiment_sell_threshold": 35.0, "action_buy_threshold": 65.0,
+        "action_sell_threshold": 35.0,
+    },
+}
+
+_VALID_ASSET_TYPES = {"stock", "crypto", "option", "future"}
+
 SCORING_WEIGHT_LIMITS = {
     "base_score": (0.0, 100.0),
     "trend_bullish": (0.0, 100.0),
@@ -102,10 +132,46 @@ def _looks_like_ticker(value):
     return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9\.\-]{0,9}", (value or "").strip()))
 
 
-def _resolve_symbol_from_input(stock):
+def _looks_like_multi_asset_ticker(value):
+    """Accept tickers including crypto (BTC-USD) and futures (ES=F)."""
+    return bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9\.\-=]{0,14}", (value or "").strip()))
+
+
+def _detect_asset_type(symbol: str) -> str:
+    """Auto-detect asset type from symbol format."""
+    s = (symbol or "").strip().upper()
+    if re.fullmatch(r"[A-Z0-9]+=F", s):
+        return "future"
+    if re.fullmatch(r"[A-Z0-9]+-USD", s):
+        return "crypto"
+    return "stock"
+
+
+def _resolve_symbol_from_input(stock, asset_type="stock"):
     candidate = (stock or "").strip()
     if not candidate or len(candidate) > 120:
         return None
+
+    at = (asset_type or "stock").lower()
+
+    if at == "crypto":
+        from stock_analyst.crypto import normalize_crypto_symbol, is_crypto_symbol
+        if is_crypto_symbol(candidate):
+            return normalize_crypto_symbol(candidate)
+        return normalize_crypto_symbol(candidate.upper())
+
+    if at == "future":
+        from stock_analyst.futures import normalize_futures_symbol, is_futures_symbol
+        if is_futures_symbol(candidate):
+            return normalize_futures_symbol(candidate)
+        return normalize_futures_symbol(candidate.upper())
+
+    # Auto-detect from symbol format
+    detected = _detect_asset_type(candidate)
+    if detected == "future":
+        return candidate.upper()
+    if detected == "crypto":
+        return candidate.upper()
 
     if _looks_like_ticker(candidate):
         return candidate.upper()
@@ -195,10 +261,20 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.serve_status()
         elif parsed_path.path == '/lookup':
             lookup_value = query.get('q', [''])[0]
-            self.serve_stock_lookup(lookup_value)
+            asset_type = query.get('asset_type', ['stock'])[0]
+            self.serve_stock_lookup(lookup_value, asset_type=asset_type)
         elif parsed_path.path == '/analyze':
             lookup_value = query.get('q', [''])[0]
-            self.serve_stock_analysis(lookup_value)
+            asset_type = query.get('asset_type', ['stock'])[0]
+            self.serve_stock_analysis(lookup_value, asset_type=asset_type)
+        elif parsed_path.path == '/api/v1/congress/trades':
+            self.serve_api_congress_trades(query)
+        elif parsed_path.path == '/api/v1/congress/roi':
+            self.serve_api_congress_roi(query)
+        elif parsed_path.path == '/api/v1/congress/seasonal':
+            self.serve_api_congress_seasonal(query)
+        elif parsed_path.path == '/api/v1/options/chain':
+            self.serve_api_options_chain(query)
         elif parsed_path.path == '/SKILL.md':
             self.serve_skill_markdown()
         else:
@@ -576,6 +652,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         agent_token=None,
         persist_weights=False,
         model_name=None,
+        asset_type="stock",
     ):
         stock = (stock or "").strip()
         if not stock:
@@ -585,21 +662,25 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Stock input is too long"})
             return
 
-        resolved_symbol = _resolve_symbol_from_input(stock)
+        at = (asset_type or "stock").lower()
+        if at not in _VALID_ASSET_TYPES:
+            at = "stock"
+
+        resolved_symbol = _resolve_symbol_from_input(stock, asset_type=at)
         if not resolved_symbol:
             self.send_json(
                 400,
                 {
                     "error": (
-                        "Could not resolve stock input to a ticker. "
-                        "Provide a valid ticker (for example, AAPL) or a company name."
+                        "Could not resolve input to a ticker. "
+                        "Provide a valid ticker (for example, AAPL, BTC-USD, ES=F) or a company name."
                     )
                 },
             )
             return
 
         try:
-            analysis = generate_full_analysis(resolved_symbol, weights=weights)
+            analysis = generate_full_analysis(resolved_symbol, weights=weights, asset_type=at)
         except Exception:
             self.send_json(502, {"error": f"Failed to generate recommendation for {resolved_symbol}"})
             return
@@ -936,6 +1017,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
     def serve_api_recommendation_get(self, query):
         stock = query.get("stock", [""])[0]
+        asset_type = query.get("asset_type", ["stock"])[0]
         agent_name = query.get("agent_name", [""])[0]
         agent_token = query.get("agent_token", [""])[0]
         raw_model_name = query.get("model_name", [""])[0]
@@ -971,6 +1053,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
             model_name=active_model,
+            asset_type=asset_type,
         )
 
     def serve_api_recommendation_post(self):
@@ -994,6 +1077,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             verbose = _parse_bool(payload.get("verborse"), default=verbose)
         agent_name = payload.get("agent_name", "")
         agent_token = payload.get("agent_token", "")
+        asset_type = payload.get("asset_type", "stock")
         active_model = model_name or self._get_default_model_name(agent_name, agent_token)
         if requested_weights is not None:
             weights = requested_weights
@@ -1011,6 +1095,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
             model_name=active_model,
+            asset_type=asset_type,
         )
 
     def _build_scoring_data_response(
@@ -1021,6 +1106,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         agent_token=None,
         persist_weights=False,
         model_name=None,
+        asset_type="stock",
     ):
         stock = (stock or "").strip()
         if not stock:
@@ -1030,7 +1116,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(400, {"error": "Stock input is too long"})
             return
 
-        resolved_symbol = _resolve_symbol_from_input(stock)
+        at = (asset_type or "stock").lower()
+        if at not in _VALID_ASSET_TYPES:
+            at = "stock"
+
+        resolved_symbol = _resolve_symbol_from_input(stock, asset_type=at)
         if not resolved_symbol:
             self.send_json(
                 400,
@@ -1048,7 +1138,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         try:
-            data = generate_scoring_data(resolved_symbol, weights=weights)
+            data = generate_scoring_data(resolved_symbol, weights=weights, asset_type=at)
         except Exception:
             self.send_json(502, {"error": f"Failed to load scoring data for {resolved_symbol}"})
             return
@@ -1061,6 +1151,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             {
                 "input": stock,
                 "resolved_symbol": resolved_symbol,
+                "asset_type": at,
                 "company": data.get("company"),
                 "price": data.get("price"),
                 "snapshot": data.get("snapshot"),
@@ -1073,6 +1164,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
     def serve_api_scoring_data_get(self, query):
         stock = query.get("stock", [""])[0]
+        asset_type = query.get("asset_type", ["stock"])[0]
         agent_name = query.get("agent_name", [""])[0]
         agent_token = query.get("agent_token", [""])[0]
         raw_model_name = query.get("model_name", [""])[0]
@@ -1104,6 +1196,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
             model_name=active_model,
+            asset_type=asset_type,
         )
 
     def serve_api_scoring_data_post(self):
@@ -1124,6 +1217,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return
         agent_name = payload.get("agent_name", "")
         agent_token = payload.get("agent_token", "")
+        asset_type = payload.get("asset_type", "stock")
         active_model = model_name or self._get_default_model_name(agent_name, agent_token)
         if requested_weights is not None:
             weights = requested_weights
@@ -1140,8 +1234,108 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             agent_token=agent_token,
             persist_weights=requested_weights is not None,
             model_name=active_model,
+            asset_type=asset_type,
         )
     
+    def serve_api_congress_trades(self, query):
+        """GET /api/v1/congress/trades -- recent congressional trades."""
+        try:
+            from stock_analyst.congress import fetch_trades
+        except ImportError:
+            self.send_json(503, {"error": "Congress module unavailable"})
+            return
+
+        year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        chamber = query.get("chamber", ["all"])[0]
+        symbol_filter = query.get("symbol", [""])[0].strip().upper()
+        politician_filter = query.get("politician", [""])[0].strip().lower()
+
+        try:
+            trades = fetch_trades(year=year, chamber=chamber)
+        except Exception as exc:
+            self.send_json(502, {"error": f"Failed to fetch congressional trades: {exc}"})
+            return
+
+        if symbol_filter:
+            trades = [t for t in trades if t.get("symbol") == symbol_filter]
+        if politician_filter:
+            trades = [t for t in trades if politician_filter in (t.get("politician") or "").lower()]
+
+        self.send_json(200, {
+            "year": year,
+            "chamber": chamber,
+            "total": len(trades),
+            "trades": trades[:200],
+            "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+
+    def serve_api_congress_roi(self, query):
+        """GET /api/v1/congress/roi -- yearly ROI report."""
+        try:
+            from stock_analyst.congress import yearly_report
+        except ImportError:
+            self.send_json(503, {"error": "Congress module unavailable"})
+            return
+
+        year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        chamber = query.get("chamber", ["all"])[0]
+        top_n = min(50, int(query.get("top_n", ["10"])[0]))
+
+        try:
+            report = yearly_report(year=year, chamber=chamber, top_n=top_n)
+        except Exception as exc:
+            self.send_json(502, {"error": f"Failed to generate ROI report: {exc}"})
+            return
+
+        self.send_json(200, report)
+
+    def serve_api_congress_seasonal(self, query):
+        """GET /api/v1/congress/seasonal -- seasonal breakdown."""
+        try:
+            from stock_analyst.congress import fetch_trades, compute_trade_roi, seasonal_summary
+        except ImportError:
+            self.send_json(503, {"error": "Congress module unavailable"})
+            return
+
+        year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        chamber = query.get("chamber", ["all"])[0]
+
+        try:
+            trades = fetch_trades(year=year, chamber=chamber)
+            trades = compute_trade_roi(trades)
+            summary = seasonal_summary(trades, year=year)
+        except Exception as exc:
+            self.send_json(502, {"error": f"Failed to generate seasonal report: {exc}"})
+            return
+
+        self.send_json(200, summary)
+
+    def serve_api_options_chain(self, query):
+        """GET /api/v1/options/chain -- options chain data."""
+        try:
+            from stock_analyst.options import get_options_chain
+        except ImportError:
+            self.send_json(503, {"error": "Options module unavailable"})
+            return
+
+        symbol = query.get("symbol", [""])[0].strip().upper()
+        expiry = query.get("expiry", [""])[0].strip() or None
+
+        if not symbol:
+            self.send_json(400, {"error": "symbol parameter is required"})
+            return
+
+        try:
+            chain = get_options_chain(symbol, expiry=expiry)
+        except ValueError as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        except Exception as exc:
+            self.send_json(502, {"error": f"Failed to fetch options chain: {exc}"})
+            return
+
+        self.send_json(200, chain)
+
     def serve_construction_page(self):
         """Serve the frontend index.html from disk."""
         index_path = os.path.join(_FRONTEND_DIR, "index.html")
@@ -1808,45 +2002,51 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
 
         self.send_json(404, {'error': 'SKILL.md not found'})
 
-    def serve_stock_lookup(self, raw_query):
-        """Lookup ticker/company and verify it maps to a public stock."""
+    def serve_stock_lookup(self, raw_query, asset_type="stock"):
+        """Lookup ticker/company and verify it maps to a valid asset."""
         query = (raw_query or '').strip()
 
         if not query:
-            self.send_json(400, {"error": "Please provide a stock ticker or company name."})
+            self.send_json(400, {"error": "Please provide a ticker or company name."})
             return
         if len(query) > self.MAX_LOOKUP_QUERY_LEN:
             self.send_json(400, {"error": "Query is too long."})
             return
 
         try:
-            result = self.lookup_public_stock(query)
+            result = self.lookup_public_stock(query, asset_type=asset_type)
             if not result:
-                self.send_json(404, {"error": f"'{query}' is not recognized as a public stock."})
+                self.send_json(404, {"error": f"'{query}' is not recognized as a valid asset."})
                 return
 
             self.send_json(200, {
                 "input": query,
                 "symbol": result["symbol"],
-                "name": result["name"]
+                "name": result["name"],
+                "asset_type": asset_type,
             })
         except Exception:
             self.send_json(502, {"error": "Unable to validate symbol right now. Please try again."})
 
-    def serve_stock_analysis(self, raw_query):
+    def serve_stock_analysis(self, raw_query, asset_type="stock"):
         query = (raw_query or '').strip().upper()
+        at = (asset_type or "stock").lower()
         if not query:
-            self.send_json(400, {"error": "Please provide a stock symbol to analyze."})
+            self.send_json(400, {"error": "Please provide a symbol to analyze."})
             return
-        if len(query) > 12 or not self.STOCK_QUERY_PATTERN.fullmatch(query):
-            self.send_json(400, {"error": "Please provide a valid stock ticker symbol (e.g., AAPL)."})
+        if len(query) > 20 or not _looks_like_multi_asset_ticker(query):
+            self.send_json(400, {"error": "Please provide a valid ticker symbol (e.g., AAPL, BTC-USD, ES=F)."})
             return
 
         try:
-            public_stock = self.lookup_ticker(query)
-            if not public_stock:
-                self.send_json(404, {"error": f"'{query}' is not recognized as a public stock."})
-                return
+            # For crypto/futures, skip SEC ticker validation
+            if at in ("crypto", "future") or _detect_asset_type(query) != "stock":
+                public_stock = self.lookup_public_stock(query, asset_type=at)
+            else:
+                public_stock = self.lookup_ticker(query)
+                if not public_stock:
+                    self.send_json(404, {"error": f"'{query}' is not recognized as a public stock."})
+                    return
 
             if generate_full_analysis is None:
                 try:
@@ -1857,9 +2057,10 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                     })
                     return
             else:
-                analysis = generate_full_analysis(query)
+                analysis = generate_full_analysis(query, asset_type=at)
 
-            analysis["company"] = public_stock.get("name", analysis.get("company", query))
+            if public_stock:
+                analysis["company"] = public_stock.get("name", analysis.get("company", query))
             self.send_json(200, analysis)
         except Exception as exc:
             self.log_error("analyze failed for %s: %s", query, exc)
@@ -1892,11 +2093,25 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             raise RuntimeError("analysis subprocess returned empty output")
         return json.loads(stdout.splitlines()[-1])
 
-    def lookup_public_stock(self, query):
-        """Return a dict with symbol/name when query resolves to a listed equity."""
+    def lookup_public_stock(self, query, asset_type="stock"):
+        """Return a dict with symbol/name when query resolves to a listed equity.
+        Bypasses SEC validation for crypto and futures symbols."""
+        at = (asset_type or "stock").lower()
+
+        if at == "crypto" or re.fullmatch(r"[A-Z0-9]+-USD", query.strip().upper()):
+            from stock_analyst.crypto import normalize_crypto_symbol
+            sym = normalize_crypto_symbol(query)
+            return {"symbol": sym, "name": sym.replace("-USD", "")}
+
+        if at == "future" or re.fullmatch(r"[A-Z0-9]+=F", query.strip().upper()):
+            from stock_analyst.futures import normalize_futures_symbol, _KNOWN_FUTURES
+            sym = normalize_futures_symbol(query)
+            base = sym.replace("=F", "")
+            name = _KNOWN_FUTURES.get(base, base)
+            return {"symbol": sym, "name": name}
+
         is_ticker_like = re.fullmatch(r'[A-Za-z.\-]{1,10}', query) is not None
 
-        # Treat as ticker only when user input looks explicitly ticker-like.
         if is_ticker_like and (query.isupper() or len(query) <= 4):
             ticker_match = self.lookup_ticker(query.upper())
             if ticker_match:
@@ -1977,8 +2192,12 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 "root": "/",
                 "health": "/health",
                 "status": "/status",
-                "lookup": "/lookup?q=<ticker-or-company-name>",
-                "analyze": "/analyze?q=<ticker-symbol>"
+                "lookup": "/lookup?q=<ticker-or-company-name>&asset_type=stock",
+                "analyze": "/analyze?q=<ticker-symbol>&asset_type=stock",
+                "congress_trades": "/api/v1/congress/trades?year=2026&chamber=all",
+                "congress_roi": "/api/v1/congress/roi?year=2026&chamber=all&top_n=10",
+                "congress_seasonal": "/api/v1/congress/seasonal?year=2026&chamber=all",
+                "options_chain": "/api/v1/options/chain?symbol=AAPL&expiry=",
             }
         }
         

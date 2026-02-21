@@ -1,6 +1,6 @@
 [project]
 name = "istockpick-backend"
-version = "1.0.0"
+version = "1.1.0"
 description = "iStockPick AI-powered stock analysis API"
 requires-python = ">=3.10"
 dependencies = [
@@ -11,4 +11,5 @@ dependencies = [
     "python-dotenv",
     "pandas",
     "numpy",
+    "capitolgains",
 ]

@@ -8,9 +8,18 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Optional
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
+_MULTI_ASSET_SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\.\-=]{0,14}$")
+
+
+class AssetType(str, Enum):
+    STOCK = "stock"
+    CRYPTO = "crypto"
+    OPTION = "option"
+    FUTURE = "future"
 _MAX_HTTP_RESPONSE_BYTES = 2_000_000
 _MAX_MEDIA_ITEMS_PER_SOURCE = 20
 _MAX_MEDIA_AI_MENTIONS = 30
@@ -428,7 +437,7 @@ def _fetch_major_news(symbol: str, company: Optional[str], limit: int) -> tuple[
 
 def generate_media_analysis(symbol: str, company: Optional[str] = None, max_items_per_source: int = 10) -> dict:
     cleaned_symbol = (symbol or "").strip().upper()
-    if not _SYMBOL_PATTERN.fullmatch(cleaned_symbol):
+    if not _MULTI_ASSET_SYMBOL_PATTERN.fullmatch(cleaned_symbol):
         raise ValueError("Invalid symbol format")
 
     limit = max(1, min(int(max_items_per_source), _MAX_MEDIA_ITEMS_PER_SOURCE))
@@ -856,41 +865,68 @@ def get_ai_recommendation(snapshot: dict, sentiment: dict, weights: Optional[dic
     }
 
 
-def generate_full_analysis(symbol: str, weights: Optional[dict] = None) -> dict:
+def _get_snapshot_for_asset(symbol: str, asset_type: str):
+    """Return (snapshot, sentiment_fn, reco_fn) based on asset_type."""
+    at = (asset_type or "stock").lower()
+
+    if at == AssetType.CRYPTO:
+        from .crypto import get_crypto_snapshot, get_crypto_sentiment, get_crypto_recommendation
+        return get_crypto_snapshot(symbol), get_crypto_sentiment, get_crypto_recommendation
+
+    if at == AssetType.FUTURE:
+        from .futures import get_futures_snapshot, get_futures_sentiment, get_futures_recommendation
+        return get_futures_snapshot(symbol), get_futures_sentiment, get_futures_recommendation
+
+    if at == AssetType.OPTION:
+        from .options import get_options_snapshot, get_options_sentiment, get_options_recommendation
+        return get_options_snapshot(symbol), get_options_sentiment, get_options_recommendation
+
+    return get_stock_snapshot(symbol), get_sentiment, get_ai_recommendation
+
+
+def _empty_media(symbol: str, name: str, reason: str = "Social analysis unavailable.") -> dict:
+    return {
+        "symbol": symbol,
+        "company": name,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "retrieval_only": True,
+        "summary": reason,
+        "sources": {"x": {}, "reddit": {}, "major_news": {}},
+        "sub_scores": {
+            "x": {"positive_score": 0, "negative_score": 0},
+            "reddit": {"positive_score": 0, "negative_score": 0},
+            "major_news": {"positive_score": 0, "negative_score": 0},
+        },
+        "counts": {"x": 0, "reddit": 0, "major_news": 0, "total": 0},
+        "media_trend": {"label": "unknown", "score": None, "reason": reason},
+        "debug": {"ai_enabled": _MEDIA_AI_ENABLED, "openai_reachable": False},
+    }
+
+
+def generate_full_analysis(symbol: str, weights: Optional[dict] = None, asset_type: str = "stock") -> dict:
     active_weights = _resolve_scoring_weights(weights)
-    snapshot = get_stock_snapshot(symbol)
-    sentiment = get_sentiment(snapshot, active_weights)
-    ai_reco = get_ai_recommendation(snapshot, sentiment, active_weights)
+    snapshot, sentiment_fn, reco_fn = _get_snapshot_for_asset(symbol, asset_type)
+    sentiment = sentiment_fn(snapshot, active_weights)
+    ai_reco = reco_fn(snapshot, sentiment, active_weights)
+
     try:
         media_analysis = generate_media_analysis(snapshot["symbol"], company=snapshot.get("name"))
     except Exception as exc:
-        media_analysis = {
-            "symbol": snapshot["symbol"],
-            "company": snapshot.get("name", snapshot["symbol"]),
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "retrieval_only": True,
-            "summary": "Social analysis unavailable.",
-            "error": str(exc),
-            "sources": {"x": {}, "reddit": {}, "major_news": {}},
-            "sub_scores": {
-                "x": {"positive_score": 0, "negative_score": 0},
-                "reddit": {"positive_score": 0, "negative_score": 0},
-                "major_news": {"positive_score": 0, "negative_score": 0},
-            },
-            "counts": {"x": 0, "reddit": 0, "major_news": 0, "total": 0},
-            "media_trend": {"label": "unknown", "score": None, "reason": "Media retrieval failed."},
-            "debug": {"ai_enabled": _MEDIA_AI_ENABLED, "openai_reachable": False},
-        }
+        media_analysis = _empty_media(snapshot["symbol"], snapshot.get("name", snapshot["symbol"]))
+        media_analysis["error"] = str(exc)
 
-    stock_summary = {
-        "summary": f"${snapshot['price']:.2f} • Trend: {snapshot['trend']} • 1D change: {snapshot['change_pct']:.2f}%",
+    asset_label = (asset_type or "stock").lower()
+    price_summary = f"${snapshot['price']:.2f} • Trend: {snapshot['trend']} • 1D change: {snapshot['change_pct']:.2f}%"
+    analysis_summary = {
+        "summary": price_summary,
         "details": snapshot,
     }
 
-    return {
+    result = {
         "symbol": snapshot["symbol"],
-        "company": snapshot["name"],
-        "stock_analysis": stock_summary,
+        "company": snapshot.get("name", snapshot["symbol"]),
+        "asset_type": asset_label,
+        "stock_analysis": analysis_summary,
         "sentiment_analysis": sentiment,
         "social_analysis": media_analysis,
         "media_analysis": media_analysis,
@@ -899,15 +935,21 @@ def generate_full_analysis(symbol: str, weights: Optional[dict] = None) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    if asset_label == "option" and "options_summary" in snapshot:
+        result["options_summary"] = snapshot["options_summary"]
 
-def generate_scoring_data(symbol: str, weights: Optional[dict] = None) -> dict:
+    return result
+
+
+def generate_scoring_data(symbol: str, weights: Optional[dict] = None, asset_type: str = "stock") -> dict:
     active_weights = _resolve_scoring_weights(weights)
-    snapshot = get_stock_snapshot(symbol)
+    snapshot, _, _ = _get_snapshot_for_asset(symbol, asset_type)
     breakdown = _build_scoring_breakdown(snapshot, active_weights)
 
     return {
         "symbol": snapshot["symbol"],
-        "company": snapshot["name"],
+        "company": snapshot.get("name", snapshot["symbol"]),
+        "asset_type": (asset_type or "stock").lower(),
         "price": snapshot["price"],
         "snapshot": snapshot,
         "scoring_inputs": breakdown,
