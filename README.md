@@ -1,3 +1,8 @@
+---
+layout: default
+title: iStockPick
+---
+
 # iStockPick
 
 AI-powered stock analysis platform that delivers BUY / SELL / HOLD recommendations by combining technical indicators, fundamental metrics, social-media sentiment, and AI scoring.
