@@ -13,16 +13,21 @@ For production domain (`api.istockpick.ai`), ensure these are live:
 
 1. `GET /health`
 2. `POST /api/v1/agents/register`
-3. `GET|POST /api/v1/recommendation`
-4. `GET|POST /api/v1/scoring-data`
+3. `GET|POST /api/v1/recommendation` (supports `asset_type`: stock, crypto, option, future)
+4. `GET|POST /api/v1/scoring-data` (supports `asset_type`)
 5. `GET /api/v1/weights`
 6. `GET /api/v1/model-leaderboard`
 7. `GET|POST /api/v1/portfolio`
+8. `GET /api/v1/congress/trades` (params: `year`, `chamber`, `symbol`, `politician`)
+9. `GET /api/v1/congress/roi` (params: `year`, `chamber`, `top_n`)
+10. `GET /api/v1/congress/seasonal` (params: `year`, `chamber`)
+11. `GET /api/v1/options/chain` (params: `symbol`, `expiry`)
 
 ## Recommendation Response Modes
 
 `/api/v1/recommendation` supports `verbose` (and legacy alias `verborse`).
-It also supports optional `model_name` for personalized model selection.
+It also supports optional `model_name` for personalized model selection,
+and `asset_type` (stock, crypto, option, future) for multi-asset analysis.
 
 1. Default (`verbose=false` or omitted):
 - Action-only payload: `{"recommendation":"BUY|HOLD|SELL"}`
@@ -133,6 +138,10 @@ ALPACA_DATA_BASE_URL=https://data.alpaca.markets
 cd backend
 python -m py_compile stock_analyst/api.py
 python -m py_compile stock_analyst/web_analyzer.py
+python -m py_compile stock_analyst/congress.py
+python -m py_compile stock_analyst/crypto.py
+python -m py_compile stock_analyst/futures.py
+python -m py_compile stock_analyst/options.py
 python -m py_compile server.py
 ```
 
@@ -149,7 +158,10 @@ required = {
     "/api/v1/recommendation",
     "/api/v1/recommendations",
     "/api/v1/scoring-data",
-    "/api/v1/weights",
+    "/api/v1/congress/trades",
+    "/api/v1/congress/roi",
+    "/api/v1/congress/seasonal",
+    "/api/v1/options/chain",
 }
 print("api_routes_ok", required.issubset(paths))
 PY
@@ -223,6 +235,42 @@ curl -X POST "http://api.istockpick.ai/api/v1/portfolio" \
   -d '{"agent_name":"agent-alpha","agent_token":"REPLACE_WITH_TOKEN","model_name":"growth","stock_recommendations":[{"symbol":"AAPL","recommendation":"SELL"},{"symbol":"GOOG","recommendation":"BUY"},{"symbol":"META","recommendation":"HOLD"}]}'
 ```
 
+10. Congress trades endpoint.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/congress/trades?year=2025&chamber=all"
+```
+
+11. Congress ROI endpoint.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/congress/roi?year=2025&chamber=senate&top_n=10"
+```
+
+12. Congress seasonal endpoint.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/congress/seasonal?year=2025"
+```
+
+13. Options chain endpoint.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/options/chain?symbol=AAPL"
+```
+
+14. Crypto recommendation.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/recommendation?stock=BTC-USD&asset_type=crypto&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN&verbose=true"
+```
+
+15. Futures recommendation.
+
+```bash
+curl "http://api.istockpick.ai/api/v1/recommendation?stock=ES=F&asset_type=future&agent_name=agent-alpha&agent_token=REPLACE_WITH_TOKEN&verbose=true"
+```
+
 ## Sample Scripts
 
 Run from `backend/`.
@@ -251,3 +299,7 @@ python3 samples/istockpick_reco_scan.py
 8. `/api/v1/portfolio` supports authenticated POST updates for portfolio positions.
 9. Authenticated calls succeed with registered agent credentials.
 10. Compile checks pass for analyzer API and server entrypoint.
+11. `asset_type` parameter works across recommendation/scoring endpoints for stock, crypto, option, and future.
+12. Congress endpoints (`/api/v1/congress/trades`, `/roi`, `/seasonal`) return data.
+13. Options chain endpoint (`/api/v1/options/chain`) returns calls/puts with summary.
+14. Frontend asset type selector, congress card, and options chain display work.

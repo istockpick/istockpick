@@ -252,7 +252,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         elif parsed_path.path == '/api/v1/weights':
             self.serve_api_weights()
         elif parsed_path.path == '/api/v1/model-leaderboard':
-            self.serve_api_model_leaderboard()
+            self.serve_api_model_leaderboard(query)
         elif parsed_path.path == '/api/v1/portfolio':
             self.serve_api_portfolio_get(query)
         elif parsed_path.path == '/api/v1/scoring-data':
@@ -796,7 +796,13 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             return {}
         return model_block
 
-    def serve_api_model_leaderboard(self):
+    def serve_api_model_leaderboard(self, query=None):
+        period = "weekly"
+        if query:
+            period = (query.get("period", ["weekly"])[0] or "weekly").strip().lower()
+        if period not in ("weekly", "monthly", "ytd"):
+            period = "weekly"
+
         with ConstructionHandler.WEIGHTS_DB_LOCK:
             try:
                 agents = self._load_weights_db()
@@ -827,6 +833,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                         "daily_change_pct": self._safe_percent_value(portfolio_entry.get("daily_change_pct")),
                         "weekly_change_pct": self._safe_percent_value(portfolio_entry.get("weekly_change_pct")),
                         "monthly_change_pct": self._safe_percent_value(portfolio_entry.get("monthly_change_pct")),
+                        "ytd_change_pct": self._safe_percent_value(portfolio_entry.get("ytd_change_pct")),
                         "daily_change_delta": self._safe_percent_value(
                             portfolio_entry.get("daily_change_delta", portfolio_entry.get("daily_change_delta_hint", 0))
                         ),
@@ -835,6 +842,9 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                         ),
                         "monthly_change_delta": self._safe_percent_value(
                             portfolio_entry.get("monthly_change_delta", portfolio_entry.get("monthly_change_delta_hint", 0))
+                        ),
+                        "ytd_change_delta": self._safe_percent_value(
+                            portfolio_entry.get("ytd_change_delta", portfolio_entry.get("ytd_change_delta_hint", 0))
                         ),
                         "daily_change_display": self._format_change_with_delta(
                             portfolio_entry.get("daily_change_pct"),
@@ -848,15 +858,18 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                             portfolio_entry.get("monthly_change_pct"),
                             portfolio_entry.get("monthly_change_delta", portfolio_entry.get("monthly_change_delta_hint", 0)),
                         ),
+                        "ytd_change_display": self._format_change_with_delta(
+                            portfolio_entry.get("ytd_change_pct"),
+                            portfolio_entry.get("ytd_change_delta", portfolio_entry.get("ytd_change_delta_hint", 0)),
+                        ),
                         "positions": portfolio_entry.get("positions", []),
                     }
                 )
 
+        sort_key = f"{period}_change_pct"
         rows.sort(
             key=lambda row: (
-                -row.get("daily_change_pct", 0.0),
-                -row.get("weekly_change_pct", 0.0),
-                -row.get("monthly_change_pct", 0.0),
+                -row.get(sort_key, 0.0),
                 str(row.get("agent_name", "")),
                 str(row.get("model_name", "")),
             )
@@ -865,6 +878,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         self.send_json(
             200,
             {
+                "period": period,
                 "total": len(rows),
                 "rows": rows,
                 "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -918,9 +932,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 "daily_change_pct": self._safe_percent_value(model_block.get("daily_change_pct")),
                 "weekly_change_pct": self._safe_percent_value(model_block.get("weekly_change_pct")),
                 "monthly_change_pct": self._safe_percent_value(model_block.get("monthly_change_pct")),
+                "ytd_change_pct": self._safe_percent_value(model_block.get("ytd_change_pct")),
                 "daily_change_delta": int(round(self._safe_percent_value(model_block.get("daily_change_delta", 0)))),
                 "weekly_change_delta": int(round(self._safe_percent_value(model_block.get("weekly_change_delta", 0)))),
                 "monthly_change_delta": int(round(self._safe_percent_value(model_block.get("monthly_change_delta", 0)))),
+                "ytd_change_delta": int(round(self._safe_percent_value(model_block.get("ytd_change_delta", 0)))),
                 "updated_at": model_block.get("updated_at"),
             }
 
@@ -957,9 +973,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         daily_change_pct = self._safe_percent_value(payload.get("daily_change_pct"))
         weekly_change_pct = self._safe_percent_value(payload.get("weekly_change_pct"))
         monthly_change_pct = self._safe_percent_value(payload.get("monthly_change_pct"))
+        ytd_change_pct = self._safe_percent_value(payload.get("ytd_change_pct"))
         daily_change_delta = int(round(self._safe_percent_value(payload.get("daily_change_delta"))))
         weekly_change_delta = int(round(self._safe_percent_value(payload.get("weekly_change_delta"))))
         monthly_change_delta = int(round(self._safe_percent_value(payload.get("monthly_change_delta"))))
+        ytd_change_delta = int(round(self._safe_percent_value(payload.get("ytd_change_delta"))))
 
         with ConstructionHandler.PORTFOLIO_DB_LOCK:
             try:
@@ -986,9 +1004,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 "daily_change_pct": daily_change_pct if "daily_change_pct" in payload else self._safe_percent_value(existing.get("daily_change_pct")),
                 "weekly_change_pct": weekly_change_pct if "weekly_change_pct" in payload else self._safe_percent_value(existing.get("weekly_change_pct")),
                 "monthly_change_pct": monthly_change_pct if "monthly_change_pct" in payload else self._safe_percent_value(existing.get("monthly_change_pct")),
+                "ytd_change_pct": ytd_change_pct if "ytd_change_pct" in payload else self._safe_percent_value(existing.get("ytd_change_pct")),
                 "daily_change_delta": daily_change_delta if "daily_change_delta" in payload else int(round(self._safe_percent_value(existing.get("daily_change_delta", 0)))),
                 "weekly_change_delta": weekly_change_delta if "weekly_change_delta" in payload else int(round(self._safe_percent_value(existing.get("weekly_change_delta", 0)))),
                 "monthly_change_delta": monthly_change_delta if "monthly_change_delta" in payload else int(round(self._safe_percent_value(existing.get("monthly_change_delta", 0)))),
+                "ytd_change_delta": ytd_change_delta if "ytd_change_delta" in payload else int(round(self._safe_percent_value(existing.get("ytd_change_delta", 0)))),
                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
             agent_block["agent_name"] = agent_name
@@ -1008,9 +1028,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 "daily_change_pct": saved.get("daily_change_pct", 0.0),
                 "weekly_change_pct": saved.get("weekly_change_pct", 0.0),
                 "monthly_change_pct": saved.get("monthly_change_pct", 0.0),
+                "ytd_change_pct": saved.get("ytd_change_pct", 0.0),
                 "daily_change_delta": saved.get("daily_change_delta", 0),
                 "weekly_change_delta": saved.get("weekly_change_delta", 0),
                 "monthly_change_delta": saved.get("monthly_change_delta", 0),
+                "ytd_change_delta": saved.get("ytd_change_delta", 0),
                 "updated_at": saved.get("updated_at"),
             },
         )
@@ -1509,11 +1531,44 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             border: 1px solid rgba(255, 255, 255, 0.14);
         }}
 
+        .leaderboard-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.6rem;
+        }}
+
         .leaderboard-title {{
             font-size: 1rem;
             font-weight: 600;
-            margin-bottom: 0.6rem;
-            text-align: center;
+        }}
+
+        .leaderboard-tabs {{
+            display: flex;
+            gap: 0.25rem;
+        }}
+
+        .leaderboard-tab {{
+            padding: 0.3rem 0.7rem;
+            font-size: 0.78rem;
+            font-weight: 500;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            background: transparent;
+            color: rgba(255, 255, 255, 0.65);
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }}
+
+        .leaderboard-tab:hover {{
+            background: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.9);
+        }}
+
+        .leaderboard-tab.active {{
+            background: rgba(255, 255, 255, 0.14);
+            color: #fff;
+            border-color: rgba(255, 255, 255, 0.35);
         }}
 
         .leaderboard-wrap {{
@@ -1736,7 +1791,14 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                 <div class="analysis-meta" id="analysisMeta"></div>
             </div>
             <div class="leaderboard-card" id="leaderboardCard">
-                <div class="leaderboard-title">Portfolio Leaderboard</div>
+                <div class="leaderboard-header">
+                    <div class="leaderboard-title">Portfolio Leaderboard</div>
+                    <div class="leaderboard-tabs" id="leaderboardTabs">
+                        <button class="leaderboard-tab active" data-period="weekly">Weekly</button>
+                        <button class="leaderboard-tab" data-period="monthly">Monthly</button>
+                        <button class="leaderboard-tab" data-period="ytd">YTD</button>
+                    </div>
+                </div>
                 <div class="leaderboard-wrap">
                     <table class="leaderboard-table">
                         <thead>
@@ -1744,13 +1806,11 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                                 <th>Agent Name</th>
                                 <th>Portfolio Name</th>
                                 <th>Model Name</th>
-                                <th>Daily % Change</th>
-                                <th>Weekly Change</th>
-                                <th>Monthly Change</th>
+                                <th id="leaderboardChangeHeader">% Change</th>
                             </tr>
                         </thead>
                         <tbody id="leaderboardBody">
-                            <tr><td colspan="6">Loading leaderboard...</td></tr>
+                            <tr><td colspan="4">Loading leaderboard...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1782,7 +1842,22 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         const analysisMeta = document.getElementById('analysisMeta');
         const leaderboardBody = document.getElementById('leaderboardBody');
         const leaderboardMeta = document.getElementById('leaderboardMeta');
+        const leaderboardTabs = document.getElementById('leaderboardTabs');
+        const leaderboardChangeHeader = document.getElementById('leaderboardChangeHeader');
         const portfolioHoverCard = document.getElementById('portfolioHoverCard');
+
+        let currentPeriod = 'weekly';
+        const periodLabels = {{ weekly: 'Weekly % Change', monthly: 'Monthly % Change', ytd: 'YTD % Change' }};
+
+        leaderboardTabs.addEventListener('click', (e) => {{
+            const tab = e.target.closest('.leaderboard-tab');
+            if (!tab || tab.dataset.period === currentPeriod) return;
+            leaderboardTabs.querySelectorAll('.leaderboard-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            currentPeriod = tab.dataset.period;
+            leaderboardChangeHeader.textContent = periodLabels[currentPeriod] || '% Change';
+            loadLeaderboard();
+        }});
 
         const fmtPct = (value) => {{
             const n = Number(value);
@@ -1883,29 +1958,30 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         }};
 
         async function loadLeaderboard() {{
-            leaderboardBody.innerHTML = '<tr><td colspan="6">Loading leaderboard...</td></tr>';
+            leaderboardBody.innerHTML = '<tr><td colspan="4">Loading leaderboard...</td></tr>';
             leaderboardMeta.textContent = '';
             try {{
-                const res = await fetch('/api/v1/model-leaderboard');
+                const res = await fetch(`/api/v1/model-leaderboard?period=${{currentPeriod}}`);
                 const data = await res.json();
 
                 if (!res.ok) {{
-                    leaderboardBody.innerHTML = `<tr><td colspan="6">${{data.error || 'Failed to load leaderboard.'}}</td></tr>`;
+                    leaderboardBody.innerHTML = `<tr><td colspan="4">${{data.error || 'Failed to load leaderboard.'}}</td></tr>`;
                     return;
                 }}
 
                 const rows = Array.isArray(data.rows) ? data.rows : [];
                 if (!rows.length) {{
-                    leaderboardBody.innerHTML = '<tr><td colspan="6">No portfolios found yet.</td></tr>';
+                    leaderboardBody.innerHTML = '<tr><td colspan="4">No portfolios found yet.</td></tr>';
                 }} else {{
+                    const pctKey = `${{currentPeriod}}_change_pct`;
+                    const deltaKey = `${{currentPeriod}}_change_delta`;
+                    const displayKey = `${{currentPeriod}}_change_display`;
                     leaderboardBody.innerHTML = rows.map((row, idx) => `
                         <tr>
                             <td>${{row.agent_name || ''}}</td>
                             <td><span class="portfolio-hover-target" data-row-index="${{idx}}">${{row.portfolio_name || ''}}</span></td>
                             <td>${{row.model_name || ''}}</td>
-                            <td>${{changeCellHtml(row.daily_change_pct, row.daily_change_delta, row.daily_change_display)}}</td>
-                            <td>${{changeCellHtml(row.weekly_change_pct, row.weekly_change_delta, row.weekly_change_display)}}</td>
-                            <td>${{changeCellHtml(row.monthly_change_pct, row.monthly_change_delta, row.monthly_change_display)}}</td>
+                            <td>${{changeCellHtml(row[pctKey], row[deltaKey], row[displayKey])}}</td>
                         </tr>
                     `).join('');
                     bindPortfolioHover(rows);
@@ -1916,7 +1992,7 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
                     ? `Last updated: ${{generatedAt.toLocaleString()}}`
                     : '';
             }} catch (err) {{
-                leaderboardBody.innerHTML = '<tr><td colspan="6">Network error while loading leaderboard.</td></tr>';
+                leaderboardBody.innerHTML = '<tr><td colspan="4">Network error while loading leaderboard.</td></tr>';
             }}
         }}
 

@@ -28,6 +28,8 @@ AI-powered stock analysis platform that delivers BUY / SELL / HOLD recommendatio
 - **Fundamental Analysis** — P/E, PEG, ROE, debt ratios, revenue & earnings growth
 - **Sentiment Analysis** — X/Twitter, Reddit (r/wallstreetbets, r/stocks, …), and RSS news feeds (WSJ, CNBC, Reuters, Financial Times)
 - **AI Sentiment Scoring** — OpenAI GPT-4o-mini evaluates aggregated sentiment
+- **Multi-Asset Support** — Stocks, Crypto (`BTC-USD`), Options (chain + put/call analysis), and Futures (`ES=F`)
+- **Congressional Trading Analytics** — Senate/House EFDS filings, seasonal ROI reports, and politician leaderboards via `capitolgains`
 - **Multi-Agent System** — Token-based agent registration with per-agent, per-model weight customization
 - **Portfolio Tracking** — Daily / weekly / monthly performance tracking with a model leaderboard
 - **Batch Recommendations** — Analyze up to 25 symbols in a single request
@@ -49,6 +51,10 @@ AI-powered stock analysis platform that delivers BUY / SELL / HOLD recommendatio
 │  backend/stock_analyst/api.py      │  FastAPI REST API (port 8000)
 │  backend/stock_analyst/            │
 │    web_analyzer.py                 │  Orchestrates analysis pipeline
+│    congress.py                     │  Congressional trading analytics
+│    crypto.py                       │  Crypto snapshot & scoring
+│    futures.py                      │  Futures snapshot & scoring
+│    options.py                      │  Options chain, snapshot & scoring
 │    technical.py                    │  Technical indicators
 │    fundamental.py                  │  Fundamental metrics
 │    config.py                       │  Environment & constants
@@ -100,6 +106,10 @@ istockpick/
 │   │   ├── __init__.py
 │   │   ├── api.py                   # FastAPI REST API
 │   │   ├── config.py                # Environment variables & constants
+│   │   ├── congress.py              # Congressional trading analytics
+│   │   ├── crypto.py                # Crypto snapshot & scoring
+│   │   ├── futures.py               # Futures snapshot & scoring
+│   │   ├── options.py               # Options chain, snapshot & scoring
 │   │   ├── fundamental.py           # Fundamental analysis
 │   │   ├── technical.py             # Technical indicators
 │   │   └── web_analyzer.py          # Analysis orchestrator
@@ -115,7 +125,7 @@ istockpick/
 │       └── portfolio.txt            # Portfolio positions & performance
 │
 ├── .github/workflows/
-│   └── jekyll-gh-pages.yml          # Deploys frontend/ to GitHub Pages
+│   └── deploy-pages.yml             # Deploys frontend/ to GitHub Pages
 ├── README.md
 ├── SKILL.md                         # Deployment playbook
 └── .gitignore
@@ -219,8 +229,12 @@ Alpaca credentials can also be placed in `~/.configuration/alpaca/credentials.js
 |---|---|---|
 | `GET` | `/health` | Health check |
 | `GET` | `/status` | Server status |
-| `GET` | `/lookup?q=<ticker>` | Stock symbol lookup |
-| `GET` | `/analyze?q=<ticker>` | Web-based analysis page |
+| `GET` | `/lookup?q=<ticker>&asset_type=stock` | Symbol lookup (stock, crypto, option, future) |
+| `GET` | `/analyze?q=<ticker>&asset_type=stock` | Web-based analysis |
+| `GET` | `/api/v1/congress/trades` | Congressional trades. Params: `year`, `chamber`, `symbol`, `politician` |
+| `GET` | `/api/v1/congress/roi` | Yearly ROI report. Params: `year`, `chamber`, `top_n` |
+| `GET` | `/api/v1/congress/seasonal` | Seasonal Q1-Q4 breakdown. Params: `year`, `chamber` |
+| `GET` | `/api/v1/options/chain` | Options chain data. Params: `symbol`, `expiry` |
 
 ### Authenticated Endpoints
 
@@ -229,12 +243,23 @@ All authenticated endpoints require `agent_name` and `agent_token`.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/agents/register` | Register a new agent |
-| `GET` / `POST` | `/api/v1/recommendation` | Single-stock recommendation |
-| `GET` / `POST` | `/api/v1/recommendations` | Batch recommendations (max 25) |
-| `GET` / `POST` | `/api/v1/scoring-data` | Raw scoring inputs & weights |
+| `GET` / `POST` | `/api/v1/recommendation` | Single recommendation (supports `asset_type`) |
+| `GET` / `POST` | `/api/v1/recommendations` | Batch recommendations (max 25, supports `asset_type`) |
+| `GET` / `POST` | `/api/v1/scoring-data` | Raw scoring inputs & weights (supports `asset_type`) |
 | `GET` | `/api/v1/weights` | List all modifiable scoring weights with ranges |
 | `GET` | `/api/v1/model-leaderboard` | Portfolio performance leaderboard |
 | `GET` / `POST` | `/api/v1/portfolio` | Read / update portfolio positions |
+
+### Asset Types
+
+Pass `asset_type` as a query param (GET) or body field (POST). Default is `stock`.
+
+| Asset Type | Symbol Format | Example |
+|---|---|---|
+| `stock` | Standard tickers | `AAPL`, `GOOG` |
+| `crypto` | `SYMBOL-USD` | `BTC-USD`, `ETH-USD` |
+| `future` | `SYMBOL=F` | `ES=F`, `GC=F`, `CL=F` |
+| `option` | Underlying ticker | `AAPL` (fetches options chain) |
 
 ### Recommendation Response Modes
 

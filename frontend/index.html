@@ -102,16 +102,29 @@
             display: flex;
             gap: 0.5rem;
             flex-wrap: wrap;
+            align-items: center;
         }
 
         .lookup-input {
             flex: 1;
-            min-width: 220px;
+            min-width: 180px;
             padding: 0.7rem 0.9rem;
             border-radius: 8px;
             border: none;
             outline: none;
             font-size: 0.95rem;
+        }
+
+        .asset-type-select {
+            padding: 0.7rem 0.6rem;
+            border-radius: 8px;
+            border: none;
+            outline: none;
+            font-size: 0.88rem;
+            background: #1a2744;
+            color: white;
+            cursor: pointer;
+            min-width: 100px;
         }
 
         .lookup-button {
@@ -153,11 +166,44 @@
             border: 1px solid rgba(255, 255, 255, 0.14);
         }
 
+        .leaderboard-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.6rem;
+        }
+
         .leaderboard-title {
             font-size: 1rem;
             font-weight: 600;
-            margin-bottom: 0.6rem;
-            text-align: center;
+        }
+
+        .leaderboard-tabs {
+            display: flex;
+            gap: 0.25rem;
+        }
+
+        .leaderboard-tab {
+            padding: 0.3rem 0.7rem;
+            font-size: 0.78rem;
+            font-weight: 500;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 6px;
+            background: transparent;
+            color: rgba(255, 255, 255, 0.65);
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s, border-color 0.15s;
+        }
+
+        .leaderboard-tab:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .leaderboard-tab.active {
+            background: rgba(255, 255, 255, 0.14);
+            color: #fff;
+            border-color: rgba(255, 255, 255, 0.35);
         }
 
         .leaderboard-wrap {
@@ -312,6 +358,123 @@
             }
         }
 
+        .options-chain-card {
+            margin-top: 0.75rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            display: none;
+            text-align: left;
+        }
+
+        .options-chain-card .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .options-chain-card .summary-item {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 0.5rem 0.65rem;
+            font-size: 0.82rem;
+        }
+
+        .congress-card {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            text-align: left;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+        }
+
+        .congress-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 0.6rem;
+            text-align: center;
+        }
+
+        .congress-filters {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.6rem;
+            justify-content: center;
+        }
+
+        .congress-filters select {
+            padding: 0.4rem 0.5rem;
+            border-radius: 6px;
+            border: none;
+            background: #1a2744;
+            color: white;
+            font-size: 0.82rem;
+            cursor: pointer;
+        }
+
+        .congress-filters button {
+            padding: 0.4rem 0.7rem;
+            border-radius: 6px;
+            border: none;
+            background: #00d4ff;
+            color: #1f2a44;
+            font-weight: 600;
+            font-size: 0.82rem;
+            cursor: pointer;
+        }
+
+        .congress-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.82rem;
+        }
+
+        .congress-table th,
+        .congress-table td {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 0.45rem 0.4rem;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        .congress-table th {
+            opacity: 0.9;
+            font-weight: 600;
+        }
+
+        .congress-meta {
+            margin-top: 0.5rem;
+            font-size: 0.78rem;
+            opacity: 0.7;
+        }
+
+        .seasonal-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.5rem;
+            margin-top: 0.6rem;
+        }
+
+        .seasonal-item {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 0.55rem;
+            text-align: center;
+            font-size: 0.82rem;
+        }
+
+        .seasonal-item .q-label {
+            font-weight: 600;
+            margin-bottom: 0.2rem;
+        }
+
+        @media (max-width: 500px) {
+            .seasonal-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
         .status {
             margin-top: 2rem;
             padding: 1rem;
@@ -370,17 +533,34 @@
         <div class="lookup-card">
             <div class="lookup-title">Try ticker/company lookup</div>
             <form class="lookup-form" id="lookupForm">
-                <input id="lookupInput" class="lookup-input" type="text" placeholder="Enter ticker (AAPL) or company name (Apple)" required />
+                <input id="lookupInput" class="lookup-input" type="text" placeholder="AAPL, BTC-USD, ES=F, or company name" required />
+                <select id="assetTypeSelect" class="asset-type-select">
+                    <option value="stock" selected>Stock</option>
+                    <option value="crypto">Crypto</option>
+                    <option value="option">Options</option>
+                    <option value="future">Futures</option>
+                </select>
                 <button class="lookup-button" type="submit">Check</button>
             </form>
             <div class="lookup-result" id="lookupResult"></div>
             <div class="analysis-card" id="analysisCard">
                 <div id="analysisTitle" class="lookup-title">AI analysis</div>
                 <div class="analysis-grid" id="analysisGrid"></div>
+                <div class="options-chain-card" id="optionsChainCard">
+                    <div class="lookup-title">Options Chain Summary</div>
+                    <div class="summary-grid" id="optionsSummaryGrid"></div>
+                </div>
                 <div class="analysis-meta" id="analysisMeta"></div>
             </div>
             <div class="leaderboard-card" id="leaderboardCard">
-                <div class="leaderboard-title">Portfolio Leaderboard</div>
+                <div class="leaderboard-header">
+                    <div class="leaderboard-title">Portfolio Leaderboard</div>
+                    <div class="leaderboard-tabs" id="leaderboardTabs">
+                        <button class="leaderboard-tab active" data-period="weekly">Weekly</button>
+                        <button class="leaderboard-tab" data-period="monthly">Monthly</button>
+                        <button class="leaderboard-tab" data-period="ytd">YTD</button>
+                    </div>
+                </div>
                 <div class="leaderboard-wrap">
                     <table class="leaderboard-table">
                         <thead>
@@ -388,17 +568,46 @@
                                 <th>Agent Name</th>
                                 <th>Portfolio Name</th>
                                 <th>Model Name</th>
-                                <th>Daily % Change</th>
-                                <th>Weekly Change</th>
-                                <th>Monthly Change</th>
+                                <th id="leaderboardChangeHeader">% Change</th>
                             </tr>
                         </thead>
                         <tbody id="leaderboardBody">
-                            <tr><td colspan="6">Loading leaderboard...</td></tr>
+                            <tr><td colspan="4">Loading leaderboard...</td></tr>
                         </tbody>
                     </table>
                 </div>
                 <div class="leaderboard-meta" id="leaderboardMeta"></div>
+            </div>
+            <div class="congress-card" id="congressCard">
+                <div class="congress-title">Congress Trading Activity</div>
+                <div class="congress-filters">
+                    <select id="congressYear"></select>
+                    <select id="congressChamber">
+                        <option value="all" selected>All</option>
+                        <option value="senate">Senate</option>
+                        <option value="house">House</option>
+                    </select>
+                    <button id="congressLoadBtn" type="button">Load</button>
+                </div>
+                <div class="seasonal-grid" id="congressSeasonalGrid" style="display:none;"></div>
+                <div class="leaderboard-wrap">
+                    <table class="congress-table">
+                        <thead>
+                            <tr>
+                                <th>Politician</th>
+                                <th>Chamber</th>
+                                <th>Symbol</th>
+                                <th>Action</th>
+                                <th>Date</th>
+                                <th>Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody id="congressBody">
+                            <tr><td colspan="6">Click Load to view trades.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="congress-meta" id="congressMeta"></div>
             </div>
         </div>
 
@@ -421,14 +630,38 @@
 
         const lookupForm = document.getElementById('lookupForm');
         const lookupInput = document.getElementById('lookupInput');
+        const assetTypeSelect = document.getElementById('assetTypeSelect');
         const lookupResult = document.getElementById('lookupResult');
         const analysisCard = document.getElementById('analysisCard');
         const analysisTitle = document.getElementById('analysisTitle');
         const analysisGrid = document.getElementById('analysisGrid');
         const analysisMeta = document.getElementById('analysisMeta');
+        const optionsChainCard = document.getElementById('optionsChainCard');
+        const optionsSummaryGrid = document.getElementById('optionsSummaryGrid');
         const leaderboardBody = document.getElementById('leaderboardBody');
         const leaderboardMeta = document.getElementById('leaderboardMeta');
+        const leaderboardTabs = document.getElementById('leaderboardTabs');
+        const leaderboardChangeHeader = document.getElementById('leaderboardChangeHeader');
         const portfolioHoverCard = document.getElementById('portfolioHoverCard');
+
+        let currentPeriod = 'weekly';
+        const periodLabels = { weekly: 'Weekly % Change', monthly: 'Monthly % Change', ytd: 'YTD % Change' };
+
+        leaderboardTabs.addEventListener('click', (e) => {
+            const tab = e.target.closest('.leaderboard-tab');
+            if (!tab || tab.dataset.period === currentPeriod) return;
+            leaderboardTabs.querySelectorAll('.leaderboard-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            currentPeriod = tab.dataset.period;
+            leaderboardChangeHeader.textContent = periodLabels[currentPeriod] || '% Change';
+            loadLeaderboard();
+        });
+        const congressBody = document.getElementById('congressBody');
+        const congressMeta = document.getElementById('congressMeta');
+        const congressYear = document.getElementById('congressYear');
+        const congressChamber = document.getElementById('congressChamber');
+        const congressLoadBtn = document.getElementById('congressLoadBtn');
+        const congressSeasonalGrid = document.getElementById('congressSeasonalGrid');
 
         const fmtPct = (value) => {
             const n = Number(value);
@@ -529,29 +762,30 @@
         };
 
         async function loadLeaderboard() {
-            leaderboardBody.innerHTML = '<tr><td colspan="6">Loading leaderboard...</td></tr>';
+            leaderboardBody.innerHTML = '<tr><td colspan="4">Loading leaderboard...</td></tr>';
             leaderboardMeta.textContent = '';
             try {
-                const res = await fetch('/api/v1/model-leaderboard');
+                const res = await fetch(`/api/v1/model-leaderboard?period=${currentPeriod}`);
                 const data = await res.json();
 
                 if (!res.ok) {
-                    leaderboardBody.innerHTML = `<tr><td colspan="6">${data.error || 'Failed to load leaderboard.'}</td></tr>`;
+                    leaderboardBody.innerHTML = `<tr><td colspan="4">${data.error || 'Failed to load leaderboard.'}</td></tr>`;
                     return;
                 }
 
                 const rows = Array.isArray(data.rows) ? data.rows : [];
                 if (!rows.length) {
-                    leaderboardBody.innerHTML = '<tr><td colspan="6">No portfolios found yet.</td></tr>';
+                    leaderboardBody.innerHTML = '<tr><td colspan="4">No portfolios found yet.</td></tr>';
                 } else {
+                    const pctKey = `${currentPeriod}_change_pct`;
+                    const deltaKey = `${currentPeriod}_change_delta`;
+                    const displayKey = `${currentPeriod}_change_display`;
                     leaderboardBody.innerHTML = rows.map((row, idx) => `
                         <tr>
                             <td>${row.agent_name || ''}</td>
                             <td><span class="portfolio-hover-target" data-row-index="${idx}">${row.portfolio_name || ''}</span></td>
                             <td>${row.model_name || ''}</td>
-                            <td>${changeCellHtml(row.daily_change_pct, row.daily_change_delta, row.daily_change_display)}</td>
-                            <td>${changeCellHtml(row.weekly_change_pct, row.weekly_change_delta, row.weekly_change_display)}</td>
-                            <td>${changeCellHtml(row.monthly_change_pct, row.monthly_change_delta, row.monthly_change_display)}</td>
+                            <td>${changeCellHtml(row[pctKey], row[deltaKey], row[displayKey])}</td>
                         </tr>
                     `).join('');
                     bindPortfolioHover(rows);
@@ -562,7 +796,7 @@
                     ? `Last updated: ${generatedAt.toLocaleString()}`
                     : '';
             } catch (err) {
-                leaderboardBody.innerHTML = '<tr><td colspan="6">Network error while loading leaderboard.</td></tr>';
+                leaderboardBody.innerHTML = '<tr><td colspan="4">Network error while loading leaderboard.</td></tr>';
             }
         }
 
@@ -570,15 +804,17 @@
             e.preventDefault();
             const q = lookupInput.value.trim();
             if (!q) return;
+            const at = assetTypeSelect.value;
 
             analysisCard.style.display = 'none';
             analysisGrid.innerHTML = '';
             analysisMeta.textContent = '';
+            optionsChainCard.style.display = 'none';
             lookupResult.textContent = 'Checking symbol...';
             lookupResult.style.color = '#ffffff';
 
             try {
-                const res = await fetch(`/lookup?q=${encodeURIComponent(q)}`);
+                const res = await fetch(`/lookup?q=${encodeURIComponent(q)}&asset_type=${encodeURIComponent(at)}`);
                 const data = await res.json();
 
                 if (!res.ok) {
@@ -587,15 +823,16 @@
                     return;
                 }
 
+                const typeLabel = at !== 'stock' ? ` [${at}]` : '';
                 lookupResult.style.color = '#d7ffd7';
-                lookupResult.textContent = `✅ ${data.input} → ${data.symbol} (${data.name})`;
+                lookupResult.textContent = `\u2705 ${data.input} \u2192 ${data.symbol} (${data.name})${typeLabel}`;
 
                 analysisTitle.textContent = `AI analysis for ${data.symbol}`;
-                analysisGrid.innerHTML = '<div class="analysis-item"><span class="spinner"></span>Running stock + sentiment + AI recommendation analysis...</div>';
+                analysisGrid.innerHTML = '<div class="analysis-item"><span class="spinner"></span>Running analysis...</div>';
                 analysisMeta.textContent = 'Generating analysis...';
                 analysisCard.style.display = 'block';
 
-                const analysisRes = await fetch(`/analyze?q=${encodeURIComponent(data.symbol)}`);
+                const analysisRes = await fetch(`/analyze?q=${encodeURIComponent(data.symbol)}&asset_type=${encodeURIComponent(at)}`);
                 const analysis = await analysisRes.json();
 
                 if (!analysisRes.ok) {
@@ -604,6 +841,7 @@
                     return;
                 }
 
+                const volLabel = at === 'crypto' ? '24h Volume' : 'Volume';
                 analysisGrid.innerHTML = `
                     <div class="analysis-item action-item"><strong>Action</strong><br>${analysis.ai_recommendation.action} (confidence: ${analysis.ai_recommendation.confidence}%)</div>
                     <div class="analysis-item"><strong>Trend Analysis</strong><br>${analysis.stock_analysis.summary}</div>
@@ -611,6 +849,21 @@
                     <div class="analysis-item"><strong>Social Analysis</strong><br>${(analysis.social_analysis && analysis.social_analysis.summary) || (analysis.media_analysis && analysis.media_analysis.summary) || 'Social analysis unavailable.'}</div>
                     <div class="analysis-item"><strong>AI Recommendation</strong><br>${analysis.ai_recommendation.summary}</div>
                 `;
+
+                if (at === 'option' && analysis.options_summary) {
+                    const os = analysis.options_summary;
+                    optionsSummaryGrid.innerHTML = `
+                        <div class="summary-item"><strong>Put/Call Ratio</strong><br>${(os.put_call_ratio || 0).toFixed(3)}</div>
+                        <div class="summary-item"><strong>Call OI</strong><br>${(os.total_call_oi || 0).toLocaleString()}</div>
+                        <div class="summary-item"><strong>Put OI</strong><br>${(os.total_put_oi || 0).toLocaleString()}</div>
+                        <div class="summary-item"><strong>Avg IV</strong><br>${((os.avg_implied_volatility || 0) * 100).toFixed(1)}%</div>
+                        <div class="summary-item"><strong>Max Pain</strong><br>$${os.max_pain || 'N/A'}</div>
+                        <div class="summary-item"><strong>Expiry</strong><br>${os.expiry || 'N/A'}</div>
+                    `;
+                    optionsChainCard.style.display = 'block';
+                } else {
+                    optionsChainCard.style.display = 'none';
+                }
 
                 const generatedAt = analysis.generated_at ? new Date(analysis.generated_at) : null;
                 analysisMeta.textContent = generatedAt && !isNaN(generatedAt)
@@ -622,6 +875,72 @@
                 analysisMeta.textContent = '';
             }
         });
+
+        // Congress trading card
+        const currentYear = new Date().getFullYear();
+        for (let y = currentYear; y >= currentYear - 5; y--) {
+            const opt = document.createElement('option');
+            opt.value = y;
+            opt.textContent = y;
+            congressYear.appendChild(opt);
+        }
+
+        async function loadCongressTrades() {
+            const year = congressYear.value;
+            const chamber = congressChamber.value;
+            congressBody.innerHTML = '<tr><td colspan="6">Loading trades...</td></tr>';
+            congressSeasonalGrid.style.display = 'none';
+            congressMeta.textContent = '';
+
+            try {
+                const [tradesRes, seasonalRes] = await Promise.all([
+                    fetch(`/api/v1/congress/trades?year=${year}&chamber=${chamber}`),
+                    fetch(`/api/v1/congress/seasonal?year=${year}&chamber=${chamber}`),
+                ]);
+
+                const tradesData = await tradesRes.json();
+                if (!tradesRes.ok) {
+                    congressBody.innerHTML = `<tr><td colspan="6">${tradesData.error || 'Failed to load.'}</td></tr>`;
+                    return;
+                }
+
+                const trades = Array.isArray(tradesData.trades) ? tradesData.trades : [];
+                if (!trades.length) {
+                    congressBody.innerHTML = '<tr><td colspan="6">No trades found for this period.</td></tr>';
+                } else {
+                    congressBody.innerHTML = trades.slice(0, 50).map(t => `
+                        <tr>
+                            <td>${escapeHtml(t.politician || '')}</td>
+                            <td>${escapeHtml(t.chamber || '')}</td>
+                            <td>${escapeHtml(t.symbol || '')}</td>
+                            <td>${escapeHtml(t.action || '')}</td>
+                            <td>${escapeHtml(t.date || '')}</td>
+                            <td>${escapeHtml(t.amount_range || '')}</td>
+                        </tr>
+                    `).join('');
+                }
+                congressMeta.textContent = `${tradesData.total || 0} total trades for ${year}`;
+
+                if (seasonalRes.ok) {
+                    const seasonal = await seasonalRes.json();
+                    const quarters = seasonal.quarters || {};
+                    congressSeasonalGrid.innerHTML = ['Q1','Q2','Q3','Q4'].map(q => {
+                        const qd = quarters[q] || {};
+                        const roiText = qd.avg_roi_pct !== null && qd.avg_roi_pct !== undefined ? `${qd.avg_roi_pct}%` : 'N/A';
+                        return `<div class="seasonal-item">
+                            <div class="q-label">${q}</div>
+                            <div>${qd.trade_count || 0} trades</div>
+                            <div>ROI: ${roiText}</div>
+                        </div>`;
+                    }).join('');
+                    congressSeasonalGrid.style.display = 'grid';
+                }
+            } catch (err) {
+                congressBody.innerHTML = '<tr><td colspan="6">Network error loading congress data.</td></tr>';
+            }
+        }
+
+        congressLoadBtn.addEventListener('click', loadCongressTrades);
 
         loadLeaderboard();
     </script>
