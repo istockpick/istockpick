@@ -4,12 +4,6 @@ construction.log
 # Local persisted runtime weights (contains agent tokens)
 stock-analyst/data/weights.txt
 
-# Jekyll build artifacts
-_site/
-.jekyll-cache/
-.jekyll-metadata
-vendor/
-
 # Python
 __pycache__/
 *.pyc
