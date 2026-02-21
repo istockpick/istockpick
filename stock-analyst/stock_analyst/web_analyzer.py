@@ -14,7 +14,7 @@ _SYMBOL_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
 _MAX_HTTP_RESPONSE_BYTES = 2_000_000
 _MAX_MEDIA_ITEMS_PER_SOURCE = 20
 _MAX_MEDIA_AI_MENTIONS = 30
-_MEDIA_AI_ENABLED = False
+_MEDIA_AI_ENABLED = True
 _DEFAULT_ALPACA_CREDS_PATH = os.path.expanduser("~/.configuration/alpaca/credentionals.json")
 _DEFAULT_ALPACA_CREDS_ALT_PATH = os.path.expanduser("~/.configuration/alpaca/credentials.json")
 logger = logging.getLogger(__name__)
@@ -202,15 +202,20 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 
 def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str], mentions: list[dict]) -> dict:
+    key_detected = bool((os.getenv("OPENAI_API_KEY") or "").strip())
     if not _MEDIA_AI_ENABLED:
         fallback = _score_mentions_fallback(mentions)
         fallback["reason"] = "AI scoring disabled; using fallback heuristic."
+        fallback["key_detected"] = key_detected
+        fallback["openai_reachable"] = None
         return fallback
 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
         fallback = _score_mentions_fallback(mentions)
         fallback["reason"] = "OPENAI_API_KEY not configured. " + fallback["reason"]
+        fallback["key_detected"] = False
+        fallback["openai_reachable"] = None
         return fallback
 
     model = (os.getenv("OPENAI_MEDIA_MODEL") or "gpt-4o-mini").strip()
@@ -270,10 +275,14 @@ def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str
             "method": "ai",
             "reason": reason,
             "model": model,
+            "key_detected": True,
+            "openai_reachable": True,
         }
     except Exception as exc:
         fallback = _score_mentions_fallback(mentions)
         fallback["reason"] = f"AI scoring failed ({exc}). " + fallback["reason"]
+        fallback["key_detected"] = True
+        fallback["openai_reachable"] = False
         return fallback
 
 
@@ -429,6 +438,7 @@ def generate_media_analysis(symbol: str, company: Optional[str] = None, max_item
     x_scores = _score_mentions_with_ai("X", cleaned_symbol, company, x_items)
     reddit_scores = _score_mentions_with_ai("Reddit", cleaned_symbol, company, reddit_items)
     news_scores = _score_mentions_with_ai("Major News", cleaned_symbol, company, news_items)
+    key_detected = bool((os.getenv("OPENAI_API_KEY") or "").strip())
 
     return {
         "symbol": cleaned_symbol,
@@ -495,6 +505,24 @@ def generate_media_analysis(symbol: str, company: Optional[str] = None, max_item
             "label": "unknown",
             "score": None,
             "reason": "Retrieval-only phase; scoring logic pending.",
+        },
+        "debug": {
+            "ai_enabled": _MEDIA_AI_ENABLED,
+            "key_detected": key_detected,
+            "openai_reachable": any(
+                score.get("openai_reachable") is True
+                for score in (x_scores, reddit_scores, news_scores)
+            ),
+            "source_methods": {
+                "x": x_scores.get("method"),
+                "reddit": reddit_scores.get("method"),
+                "major_news": news_scores.get("method"),
+            },
+            "source_openai_reachable": {
+                "x": x_scores.get("openai_reachable"),
+                "reddit": reddit_scores.get("openai_reachable"),
+                "major_news": news_scores.get("openai_reachable"),
+            },
         },
     }
 
