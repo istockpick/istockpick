@@ -6,11 +6,15 @@ import os
 import re
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Optional
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9\.\-]{0,9}$")
 _MAX_HTTP_RESPONSE_BYTES = 2_000_000
+_MAX_MEDIA_ITEMS_PER_SOURCE = 20
+_MAX_MEDIA_AI_MENTIONS = 30
+_MEDIA_AI_ENABLED = False
 _DEFAULT_ALPACA_CREDS_PATH = os.path.expanduser("~/.configuration/alpaca/credentionals.json")
 _DEFAULT_ALPACA_CREDS_ALT_PATH = os.path.expanduser("~/.configuration/alpaca/credentials.json")
 logger = logging.getLogger(__name__)
@@ -66,11 +70,433 @@ def _fetch_json(url: str, headers=None) -> dict:
     return json.loads(body.decode("utf-8", errors="ignore"))
 
 
+def _post_json(url: str, payload: dict, headers=None) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=12) as response:
+        body = response.read(_MAX_HTTP_RESPONSE_BYTES + 1)
+        if len(body) > _MAX_HTTP_RESPONSE_BYTES:
+            raise ValueError("Upstream response too large")
+    return json.loads(body.decode("utf-8", errors="ignore"))
+
+
 def _to_float(value, default=None):
     try:
         return float(value)
     except Exception:
         return default
+
+
+def _strip_html(value: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    return " ".join(text.split()).strip()
+
+
+def _iso_from_epoch(value) -> Optional[str]:
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _normalize_media_item(source: str, title: str, url: str, created_at: Optional[str], text: str = "", publisher: str = "") -> dict:
+    return {
+        "source": source,
+        "publisher": publisher,
+        "title": (title or "").strip(),
+        "text": (text or "").strip(),
+        "url": (url or "").strip(),
+        "created_at": created_at,
+    }
+
+
+def _safe_int(value, default=0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _dedupe_media_items(items: list[dict], limit: int) -> list[dict]:
+    seen = set()
+    deduped = []
+    for item in items:
+        key = (item.get("url") or "").strip() or (item.get("title") or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _build_media_query(symbol: str, company: Optional[str] = None) -> str:
+    tokens = [symbol.upper()]
+    if company:
+        cleaned = company.strip()
+        if cleaned and cleaned.upper() != symbol.upper():
+            tokens.append(f"\"{cleaned}\"")
+    return " OR ".join(tokens)
+
+
+def _score_mentions_fallback(mentions: list[dict]) -> dict:
+    positive_terms = {
+        "beat", "beats", "bull", "bullish", "buy", "upgrade", "upgraded", "growth",
+        "strong", "surge", "outperform", "record", "momentum", "expand", "profit",
+    }
+    negative_terms = {
+        "miss", "misses", "bear", "bearish", "sell", "downgrade", "downgraded", "weak",
+        "drop", "plunge", "underperform", "loss", "risk", "lawsuit", "cut", "decline",
+    }
+    pos_hits = 0
+    neg_hits = 0
+    for item in mentions:
+        text = f"{item.get('title', '')} {item.get('text', '')}".lower()
+        pos_hits += sum(1 for term in positive_terms if term in text)
+        neg_hits += sum(1 for term in negative_terms if term in text)
+
+    total = pos_hits + neg_hits
+    if total <= 0:
+        return {
+            "positive_score": 0,
+            "negative_score": 0,
+            "method": "fallback",
+            "reason": "No sentiment-bearing keywords found.",
+        }
+
+    positive_score = int(round(100 * (pos_hits / total)))
+    negative_score = max(0, min(100, 100 - positive_score))
+    return {
+        "positive_score": positive_score,
+        "negative_score": negative_score,
+        "method": "fallback",
+        "reason": f"Keyword heuristic from {len(mentions)} mentions.",
+    }
+
+
+def _extract_json_object(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    cleaned = text.strip()
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if not match:
+        return None
+    try:
+        obj = json.loads(match.group(0))
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        return None
+    return None
+
+
+def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str], mentions: list[dict]) -> dict:
+    if not _MEDIA_AI_ENABLED:
+        fallback = _score_mentions_fallback(mentions)
+        fallback["reason"] = "AI scoring disabled; using fallback heuristic."
+        return fallback
+
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        fallback = _score_mentions_fallback(mentions)
+        fallback["reason"] = "OPENAI_API_KEY not configured. " + fallback["reason"]
+        return fallback
+
+    model = (os.getenv("OPENAI_MEDIA_MODEL") or "gpt-4o-mini").strip()
+    sample = []
+    for item in mentions[:_MAX_MEDIA_AI_MENTIONS]:
+        sample.append(
+            {
+                "title": item.get("title", ""),
+                "text": item.get("text", ""),
+                "publisher": item.get("publisher", ""),
+                "created_at": item.get("created_at", ""),
+            }
+        )
+    user_prompt = {
+        "task": "Score sentiment for stock mentions by source",
+        "source": source_name,
+        "symbol": symbol,
+        "company": company or symbol,
+        "mentions": sample,
+        "instructions": [
+            "Return strict JSON only.",
+            "Compute positive_score and negative_score as integers from 0 to 100.",
+            "Scores represent bullish vs bearish sentiment in these mentions only.",
+            "If mentions are mixed/neutral, keep both moderate; if no signal set both to 0.",
+            "Include short reason string.",
+            "Format: {\"positive_score\":int,\"negative_score\":int,\"reason\":string}",
+        ],
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a finance sentiment scorer. Output strict JSON only."},
+            {"role": "user", "content": json.dumps(user_prompt)},
+        ],
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        resp = _post_json(
+            "https://api.openai.com/v1/chat/completions",
+            payload,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        content = (
+            (((resp.get("choices") or [{}])[0].get("message") or {}).get("content")) or ""
+        )
+        parsed = _extract_json_object(content)
+        if not parsed:
+            raise ValueError("AI response JSON parse failed")
+
+        pos = max(0, min(100, _safe_int(parsed.get("positive_score"), 0)))
+        neg = max(0, min(100, _safe_int(parsed.get("negative_score"), 0)))
+        reason = str(parsed.get("reason", "")).strip() or "AI scored from media mentions."
+        return {
+            "positive_score": pos,
+            "negative_score": neg,
+            "method": "ai",
+            "reason": reason,
+            "model": model,
+        }
+    except Exception as exc:
+        fallback = _score_mentions_fallback(mentions)
+        fallback["reason"] = f"AI scoring failed ({exc}). " + fallback["reason"]
+        return fallback
+
+
+def _fetch_x_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
+    bearer = (
+        os.getenv("X_BEARER_TOKEN")
+        or os.getenv("TWITTER_BEARER_TOKEN")
+        or ""
+    ).strip()
+    if not bearer:
+        return "unavailable", [], "X_BEARER_TOKEN/TWITTER_BEARER_TOKEN not configured"
+
+    query = f"({_build_media_query(symbol, company)}) (stock OR shares OR earnings) lang:en -is:retweet"
+    params = urllib.parse.urlencode(
+        {
+            "query": query,
+            "max_results": str(max(10, min(limit, 100))),
+            "tweet.fields": "created_at,lang",
+        }
+    )
+    url = f"https://api.twitter.com/2/tweets/search/recent?{params}"
+    headers = {"Authorization": f"Bearer {bearer}"}
+
+    try:
+        payload = _fetch_json(url, headers=headers)
+        raw_items = payload.get("data", [])
+        items = []
+        for row in raw_items:
+            if not isinstance(row, dict):
+                continue
+            text = (row.get("text") or "").strip()
+            if not text:
+                continue
+            tweet_id = (row.get("id") or "").strip()
+            tweet_url = f"https://x.com/i/web/status/{tweet_id}" if tweet_id else ""
+            items.append(
+                _normalize_media_item(
+                    source="x",
+                    publisher="X",
+                    title=text[:180],
+                    text=text,
+                    url=tweet_url,
+                    created_at=row.get("created_at"),
+                )
+            )
+        return "ok", _dedupe_media_items(items, limit), None
+    except Exception as exc:
+        return "error", [], str(exc)
+
+
+def _fetch_reddit_forum_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
+    forums = ["wallstreetbets", "stocks", "investing", "SecurityAnalysis"]
+    query = _build_media_query(symbol, company)
+    all_items = []
+
+    try:
+        for forum in forums:
+            params = urllib.parse.urlencode(
+                {
+                    "q": query,
+                    "restrict_sr": "1",
+                    "sort": "new",
+                    "t": "week",
+                    "limit": str(max(5, min(limit, 50))),
+                }
+            )
+            url = f"https://www.reddit.com/r/{forum}/search.json?{params}"
+            payload = _fetch_json(url, headers={"User-Agent": "iStockPick/1.0"})
+            children = (((payload.get("data") or {}).get("children")) or [])
+            for entry in children:
+                data = (entry or {}).get("data") or {}
+                title = (data.get("title") or "").strip()
+                if not title:
+                    continue
+                permalink = (data.get("permalink") or "").strip()
+                post_url = f"https://www.reddit.com{permalink}" if permalink else ""
+                all_items.append(
+                    _normalize_media_item(
+                        source="reddit",
+                        publisher=f"r/{forum}",
+                        title=title,
+                        text=_strip_html(data.get("selftext") or ""),
+                        url=post_url,
+                        created_at=_iso_from_epoch(data.get("created_utc")),
+                    )
+                )
+        return "ok", _dedupe_media_items(all_items, limit), None
+    except Exception as exc:
+        return "error", [], str(exc)
+
+
+def _fetch_news_rss_items(source: str, feed_url: str, symbol: str, company: Optional[str], limit: int) -> list[dict]:
+    raw_xml = _fetch_text(feed_url)
+    root = ET.fromstring(raw_xml)
+    query_terms = [symbol.upper()]
+    if company:
+        query_terms.extend([t for t in re.split(r"\s+", company.upper().strip()) if t])
+    query_terms = [term for term in query_terms if term]
+
+    items = []
+    for node in root.findall(".//item"):
+        title = _strip_html(node.findtext("title", default=""))
+        link = (node.findtext("link", default="") or "").strip()
+        pub_date = (node.findtext("pubDate", default="") or "").strip() or None
+        description = _strip_html(node.findtext("description", default=""))
+        haystack = f"{title} {description}".upper()
+        if query_terms and not any(term in haystack for term in query_terms):
+            continue
+        items.append(
+            _normalize_media_item(
+                source="major_news",
+                publisher=source,
+                title=title,
+                text=description,
+                url=link,
+                created_at=pub_date,
+            )
+        )
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _fetch_major_news(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
+    feeds = {
+        "WSJ": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+        "CNBC": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+        "Reuters": "https://feeds.reuters.com/reuters/businessNews",
+        "Financial Times": "https://www.ft.com/markets?format=rss",
+    }
+    all_items = []
+    errors = []
+    for source, url in feeds.items():
+        try:
+            all_items.extend(_fetch_news_rss_items(source, url, symbol, company, limit))
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+
+    status = "ok" if all_items else ("error" if errors else "ok")
+    reason = "; ".join(errors) if errors else None
+    return status, _dedupe_media_items(all_items, limit), reason
+
+
+def generate_media_analysis(symbol: str, company: Optional[str] = None, max_items_per_source: int = 10) -> dict:
+    cleaned_symbol = (symbol or "").strip().upper()
+    if not _SYMBOL_PATTERN.fullmatch(cleaned_symbol):
+        raise ValueError("Invalid symbol format")
+
+    limit = max(1, min(int(max_items_per_source), _MAX_MEDIA_ITEMS_PER_SOURCE))
+    x_status, x_items, x_reason = _fetch_x_posts(cleaned_symbol, company, limit)
+    reddit_status, reddit_items, reddit_reason = _fetch_reddit_forum_posts(cleaned_symbol, company, limit)
+    news_status, news_items, news_reason = _fetch_major_news(cleaned_symbol, company, limit)
+    x_scores = _score_mentions_with_ai("X", cleaned_symbol, company, x_items)
+    reddit_scores = _score_mentions_with_ai("Reddit", cleaned_symbol, company, reddit_items)
+    news_scores = _score_mentions_with_ai("Major News", cleaned_symbol, company, news_items)
+
+    return {
+        "symbol": cleaned_symbol,
+        "company": (company or cleaned_symbol),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "retrieval_only": True,
+        "summary": (
+            "Media sources retrieved from X, Reddit stock forums, and major news. "
+            "Bullish/bearish inference logic is not enabled yet."
+        ),
+        "sources": {
+            "x": {
+                "status": x_status,
+                "items": x_items,
+                "reason": x_reason,
+                "positive_score": x_scores.get("positive_score", 0),
+                "negative_score": x_scores.get("negative_score", 0),
+                "score_reason": x_scores.get("reason"),
+                "score_method": x_scores.get("method"),
+                "score_model": x_scores.get("model"),
+            },
+            "reddit": {
+                "status": reddit_status,
+                "items": reddit_items,
+                "reason": reddit_reason,
+                "positive_score": reddit_scores.get("positive_score", 0),
+                "negative_score": reddit_scores.get("negative_score", 0),
+                "score_reason": reddit_scores.get("reason"),
+                "score_method": reddit_scores.get("method"),
+                "score_model": reddit_scores.get("model"),
+            },
+            "major_news": {
+                "status": news_status,
+                "items": news_items,
+                "reason": news_reason,
+                "positive_score": news_scores.get("positive_score", 0),
+                "negative_score": news_scores.get("negative_score", 0),
+                "score_reason": news_scores.get("reason"),
+                "score_method": news_scores.get("method"),
+                "score_model": news_scores.get("model"),
+            },
+        },
+        "sub_scores": {
+            "x": {
+                "positive_score": x_scores.get("positive_score", 0),
+                "negative_score": x_scores.get("negative_score", 0),
+            },
+            "reddit": {
+                "positive_score": reddit_scores.get("positive_score", 0),
+                "negative_score": reddit_scores.get("negative_score", 0),
+            },
+            "major_news": {
+                "positive_score": news_scores.get("positive_score", 0),
+                "negative_score": news_scores.get("negative_score", 0),
+            },
+        },
+        "counts": {
+            "x": len(x_items),
+            "reddit": len(reddit_items),
+            "major_news": len(news_items),
+            "total": len(x_items) + len(reddit_items) + len(news_items),
+        },
+        "media_trend": {
+            "label": "unknown",
+            "score": None,
+            "reason": "Retrieval-only phase; scoring logic pending.",
+        },
+    }
 
 
 def _load_alpaca_credentials() -> dict:
