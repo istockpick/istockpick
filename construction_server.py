@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Enhanced Web Server with In Construction Page - Fixed for External Access
-Binds to all interfaces (0.0.0.0) instead of just localhost
+Binds to all interfaces (0.0.0.0) instead of just localhost or not
 """
 
 import http.server
