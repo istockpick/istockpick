@@ -1,0 +1,10 @@
+/Users/richliu/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+127.0.0.1 - - [23/Feb/2026 19:04:09] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [23/Feb/2026 19:04:09] "GET /api/v1/model-leaderboard?period=weekly HTTP/1.1" 200 -
+127.0.0.1 - - [23/Feb/2026 19:04:14] "GET /lookup?q=rblx&asset_type=stock HTTP/1.1" 200 -
+x media retrieval unavailable for symbol=RBLX: bearer token not configured
+major news retrieval network error for source=Reuters symbol=RBLX feed=https://feeds.reuters.com/reuters/businessNews error=<urlopen error [Errno 8] nodename nor servname provided, or not known>
+media source status x=unavailable symbol=RBLX reason=X_BEARER_TOKEN/TWITTER_BEARER_TOKEN not configured
+media source status major_news=error symbol=RBLX reason=Reuters: <urlopen error [Errno 8] nodename nor servname provided, or not known>
+127.0.0.1 - - [23/Feb/2026 19:04:16] "GET /analyze?q=RBLX&asset_type=stock HTTP/1.1" 200 -

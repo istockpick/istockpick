@@ -217,7 +217,19 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str], mentions: list[dict]) -> dict:
     key_detected = bool((os.getenv("OPENAI_API_KEY") or "").strip())
+    if not mentions:
+        fallback = _score_mentions_fallback([])
+        fallback["reason"] = "No mentions retrieved for source; using neutral fallback."
+        fallback["key_detected"] = key_detected
+        fallback["openai_reachable"] = None
+        return fallback
+
     if not _MEDIA_AI_ENABLED:
+        logger.info(
+            "media ai scoring disabled for source=%s symbol=%s (using fallback)",
+            source_name,
+            symbol,
+        )
         fallback = _score_mentions_fallback(mentions)
         fallback["reason"] = "AI scoring disabled; using fallback heuristic."
         fallback["key_detected"] = key_detected
@@ -226,6 +238,11 @@ def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str
 
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
+        logger.warning(
+            "media ai scoring unavailable for source=%s symbol=%s: OPENAI_API_KEY not configured",
+            source_name,
+            symbol,
+        )
         fallback = _score_mentions_fallback(mentions)
         fallback["reason"] = "OPENAI_API_KEY not configured. " + fallback["reason"]
         fallback["key_detected"] = False
@@ -292,7 +309,40 @@ def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str
             "key_detected": True,
             "openai_reachable": True,
         }
+    except urllib.error.HTTPError as exc:
+        logger.warning(
+            "media ai scoring http error for source=%s symbol=%s model=%s code=%s reason=%s",
+            source_name,
+            symbol,
+            model,
+            getattr(exc, "code", None),
+            getattr(exc, "reason", exc),
+        )
+        fallback = _score_mentions_fallback(mentions)
+        fallback["reason"] = f"AI scoring failed ({exc}). " + fallback["reason"]
+        fallback["key_detected"] = True
+        fallback["openai_reachable"] = False
+        return fallback
+    except urllib.error.URLError as exc:
+        logger.warning(
+            "media ai scoring network error for source=%s symbol=%s model=%s error=%s",
+            source_name,
+            symbol,
+            model,
+            exc,
+        )
+        fallback = _score_mentions_fallback(mentions)
+        fallback["reason"] = f"AI scoring failed ({exc}). " + fallback["reason"]
+        fallback["key_detected"] = True
+        fallback["openai_reachable"] = False
+        return fallback
     except Exception as exc:
+        logger.exception(
+            "media ai scoring failed for source=%s symbol=%s model=%s",
+            source_name,
+            symbol,
+            model,
+        )
         fallback = _score_mentions_fallback(mentions)
         fallback["reason"] = f"AI scoring failed ({exc}). " + fallback["reason"]
         fallback["key_detected"] = True
@@ -360,6 +410,7 @@ def _fetch_x_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str
         or ""
     ).strip()
     if not bearer:
+        logger.warning("x media retrieval unavailable for symbol=%s: bearer token not configured", symbol)
         return "unavailable", [], "X_BEARER_TOKEN/TWITTER_BEARER_TOKEN not configured"
 
     query = f"({_build_media_query(symbol, company)}) (stock OR shares OR earnings) lang:en -is:retweet"
@@ -396,7 +447,14 @@ def _fetch_x_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str
                 )
             )
         return "ok", _dedupe_media_items(items, limit), None
+    except urllib.error.HTTPError as exc:
+        logger.warning("x media retrieval http error for symbol=%s code=%s reason=%s", symbol, getattr(exc, "code", None), getattr(exc, "reason", exc))
+        return "error", [], str(exc)
+    except urllib.error.URLError as exc:
+        logger.warning("x media retrieval network error for symbol=%s error=%s", symbol, exc)
+        return "error", [], str(exc)
     except Exception as exc:
+        logger.exception("x media retrieval failed for symbol=%s", symbol)
         return "error", [], str(exc)
 
 
@@ -437,7 +495,14 @@ def _fetch_reddit_forum_posts(symbol: str, company: Optional[str], limit: int) -
                     )
                 )
         return "ok", _dedupe_media_items(all_items, limit), None
+    except urllib.error.HTTPError as exc:
+        logger.warning("reddit media retrieval http error for symbol=%s code=%s reason=%s", symbol, getattr(exc, "code", None), getattr(exc, "reason", exc))
+        return "error", [], str(exc)
+    except urllib.error.URLError as exc:
+        logger.warning("reddit media retrieval network error for symbol=%s error=%s", symbol, exc)
+        return "error", [], str(exc)
     except Exception as exc:
+        logger.exception("reddit media retrieval failed for symbol=%s", symbol)
         return "error", [], str(exc)
 
 
@@ -485,7 +550,21 @@ def _fetch_major_news(symbol: str, company: Optional[str], limit: int) -> tuple[
     for source, url in feeds.items():
         try:
             all_items.extend(_fetch_news_rss_items(source, url, symbol, company, limit))
+        except urllib.error.HTTPError as exc:
+            logger.warning(
+                "major news retrieval http error for source=%s symbol=%s feed=%s code=%s reason=%s",
+                source,
+                symbol,
+                url,
+                getattr(exc, "code", None),
+                getattr(exc, "reason", exc),
+            )
+            errors.append(f"{source}: {exc}")
+        except urllib.error.URLError as exc:
+            logger.warning("major news retrieval network error for source=%s symbol=%s feed=%s error=%s", source, symbol, url, exc)
+            errors.append(f"{source}: {exc}")
         except Exception as exc:
+            logger.exception("major news retrieval failed for source=%s symbol=%s feed=%s", source, symbol, url)
             errors.append(f"{source}: {exc}")
 
     status = "ok" if all_items else ("error" if errors else "ok")
@@ -505,6 +584,12 @@ def generate_media_analysis(symbol: str, company: Optional[str] = None, max_item
     x_scores = _score_mentions_with_ai("X", cleaned_symbol, company, x_items)
     reddit_scores = _score_mentions_with_ai("Reddit", cleaned_symbol, company, reddit_items)
     news_scores = _score_mentions_with_ai("Major News", cleaned_symbol, company, news_items)
+    if x_status != "ok":
+        logger.warning("media source status x=%s symbol=%s reason=%s", x_status, cleaned_symbol, x_reason)
+    if reddit_status != "ok":
+        logger.warning("media source status reddit=%s symbol=%s reason=%s", reddit_status, cleaned_symbol, reddit_reason)
+    if news_status != "ok":
+        logger.warning("media source status major_news=%s symbol=%s reason=%s", news_status, cleaned_symbol, news_reason)
     key_detected = bool((os.getenv("OPENAI_API_KEY") or "").strip())
     source_payloads = {
         "x": {"status": x_status, "items": x_items, "reason": x_reason},
