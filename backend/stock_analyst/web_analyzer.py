@@ -24,6 +24,11 @@ _MAX_HTTP_RESPONSE_BYTES = 2_000_000
 _MAX_MEDIA_ITEMS_PER_SOURCE = 20
 _MAX_MEDIA_AI_MENTIONS = 30
 _MEDIA_AI_ENABLED = True
+_MEDIA_SOURCE_WEIGHTS = {
+    "x": 0.40,
+    "reddit": 0.30,
+    "major_news": 0.30,
+}
 _DEFAULT_ALPACA_CREDS_PATH = os.path.expanduser("~/.configuration/alpaca/credentionals.json")
 _DEFAULT_ALPACA_CREDS_ALT_PATH = os.path.expanduser("~/.configuration/alpaca/credentials.json")
 logger = logging.getLogger(__name__)
@@ -295,6 +300,59 @@ def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str
         return fallback
 
 
+def _combine_media_scores(source_payloads: dict, source_scores: dict) -> dict:
+    weighted_positive = 0.0
+    weighted_negative = 0.0
+    components = {}
+
+    for source_key, weight in _MEDIA_SOURCE_WEIGHTS.items():
+        payload = source_payloads.get(source_key) or {}
+        scores = source_scores.get(source_key) or {}
+        items = payload.get("items") if isinstance(payload, dict) else None
+
+        # Missing/unavailable source contributes neutral sentiment in final blend.
+        if not isinstance(items, list) or len(items) == 0:
+            pos = 50.0
+            neg = 50.0
+            assumed_neutral = True
+        else:
+            pos = max(0.0, min(100.0, float(scores.get("positive_score", 0))))
+            neg = max(0.0, min(100.0, float(scores.get("negative_score", 0))))
+            total = pos + neg
+            if total <= 0:
+                pos, neg = 50.0, 50.0
+                assumed_neutral = True
+            else:
+                assumed_neutral = False
+
+        weighted_positive += weight * pos
+        weighted_negative += weight * neg
+        components[source_key] = {
+            "weight": weight,
+            "positive_score_used": round(pos, 2),
+            "negative_score_used": round(neg, 2),
+            "assumed_neutral": assumed_neutral,
+        }
+
+    net_score = weighted_positive - weighted_negative
+    if net_score >= 10:
+        label = "bullish"
+    elif net_score <= -10:
+        label = "bearish"
+    else:
+        label = "neutral"
+
+    return {
+        "label": label,
+        "score": round(net_score, 2),  # net bullish-bearish score in [-100, 100]
+        "positive_score": round(weighted_positive, 2),
+        "negative_score": round(weighted_negative, 2),
+        "weights_used": dict(_MEDIA_SOURCE_WEIGHTS),
+        "components": components,
+        "reason": "Weighted blend of X (40%), Reddit (30%), and Major News (30%); missing sources treated as neutral.",
+    }
+
+
 def _fetch_x_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
     bearer = (
         os.getenv("X_BEARER_TOKEN")
@@ -448,16 +506,35 @@ def generate_media_analysis(symbol: str, company: Optional[str] = None, max_item
     reddit_scores = _score_mentions_with_ai("Reddit", cleaned_symbol, company, reddit_items)
     news_scores = _score_mentions_with_ai("Major News", cleaned_symbol, company, news_items)
     key_detected = bool((os.getenv("OPENAI_API_KEY") or "").strip())
+    source_payloads = {
+        "x": {"status": x_status, "items": x_items, "reason": x_reason},
+        "reddit": {"status": reddit_status, "items": reddit_items, "reason": reddit_reason},
+        "major_news": {"status": news_status, "items": news_items, "reason": news_reason},
+    }
+    source_scores = {
+        "x": x_scores,
+        "reddit": reddit_scores,
+        "major_news": news_scores,
+    }
+    media_trend = _combine_media_scores(source_payloads, source_scores)
+    missing_source_labels = []
+    source_label_map = {"x": "X", "reddit": "Reddit", "major_news": "Major News"}
+    for source_key, component in (media_trend.get("components") or {}).items():
+        if component.get("assumed_neutral"):
+            missing_source_labels.append(source_label_map.get(source_key, source_key))
+    summary = (
+        f"Weighted media sentiment is {media_trend.get('label', 'neutral')} "
+        f"(net {float(media_trend.get('score', 0)):.2f})."
+    )
+    if missing_source_labels:
+        summary += " Missing sources treated as neutral: " + ", ".join(missing_source_labels) + "."
 
     return {
         "symbol": cleaned_symbol,
         "company": (company or cleaned_symbol),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "retrieval_only": True,
-        "summary": (
-            "Media sources retrieved from X, Reddit stock forums, and major news. "
-            "Bullish/bearish inference logic is not enabled yet."
-        ),
+        "summary": summary,
         "sources": {
             "x": {
                 "status": x_status,
@@ -510,11 +587,7 @@ def generate_media_analysis(symbol: str, company: Optional[str] = None, max_item
             "major_news": len(news_items),
             "total": len(x_items) + len(reddit_items) + len(news_items),
         },
-        "media_trend": {
-            "label": "unknown",
-            "score": None,
-            "reason": "Retrieval-only phase; scoring logic pending.",
-        },
+        "media_trend": media_trend,
         "debug": {
             "ai_enabled": _MEDIA_AI_ENABLED,
             "key_detected": key_detected,
@@ -885,6 +958,18 @@ def _get_snapshot_for_asset(symbol: str, asset_type: str):
 
 
 def _empty_media(symbol: str, name: str, reason: str = "Social analysis unavailable.") -> dict:
+    source_payloads = {
+        "x": {"items": []},
+        "reddit": {"items": []},
+        "major_news": {"items": []},
+    }
+    source_scores = {
+        "x": {"positive_score": 0, "negative_score": 0},
+        "reddit": {"positive_score": 0, "negative_score": 0},
+        "major_news": {"positive_score": 0, "negative_score": 0},
+    }
+    media_trend = _combine_media_scores(source_payloads, source_scores)
+    media_trend["reason"] = reason + " Missing sources treated as neutral."
     return {
         "symbol": symbol,
         "company": name,
@@ -898,7 +983,7 @@ def _empty_media(symbol: str, name: str, reason: str = "Social analysis unavaila
             "major_news": {"positive_score": 0, "negative_score": 0},
         },
         "counts": {"x": 0, "reddit": 0, "major_news": 0, "total": 0},
-        "media_trend": {"label": "unknown", "score": None, "reason": reason},
+        "media_trend": media_trend,
         "debug": {"ai_enabled": _MEDIA_AI_ENABLED, "openai_reachable": False},
     }
 
