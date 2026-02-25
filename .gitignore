@@ -1,8 +1,9 @@
 # Runtime logs
 construction.log
 
-# Local persisted runtime weights (contains agent tokens)
+# Local persisted runtime data (contains agent tokens and weights)
 backend/data/weights.txt
+backend/data/agents_db.txt
 
 # Python
 __pycache__/

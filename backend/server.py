@@ -1267,7 +1267,10 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(503, {"error": "Congress module unavailable"})
             return
 
-        year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        try:
+            year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        except (ValueError, IndexError):
+            year = datetime.datetime.now().year
         chamber = query.get("chamber", ["all"])[0]
         symbol_filter = query.get("symbol", [""])[0].strip().upper()
         politician_filter = query.get("politician", [""])[0].strip().lower()
@@ -1299,9 +1302,15 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(503, {"error": "Congress module unavailable"})
             return
 
-        year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        try:
+            year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        except (ValueError, IndexError):
+            year = datetime.datetime.now().year
         chamber = query.get("chamber", ["all"])[0]
-        top_n = min(50, int(query.get("top_n", ["10"])[0]))
+        try:
+            top_n = min(50, int(query.get("top_n", ["10"])[0]))
+        except (ValueError, IndexError):
+            top_n = 10
 
         try:
             report = yearly_report(year=year, chamber=chamber, top_n=top_n)
@@ -1319,12 +1328,13 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             self.send_json(503, {"error": "Congress module unavailable"})
             return
 
-        year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        try:
+            year = int(query.get("year", [str(datetime.datetime.now().year)])[0])
+        except (ValueError, IndexError):
+            year = datetime.datetime.now().year
         chamber = query.get("chamber", ["all"])[0]
 
         try:
-            trades = fetch_trades(year=year, chamber=chamber)
-            trades = compute_trade_roi(trades)
             summary = seasonal_summary(trades, year=year)
         except Exception as exc:
             self.send_json(502, {"error": f"Failed to generate seasonal report: {exc}"})

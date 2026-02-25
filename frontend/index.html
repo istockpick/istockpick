@@ -769,7 +769,7 @@
                 const data = await res.json();
 
                 if (!res.ok) {
-                    leaderboardBody.innerHTML = `<tr><td colspan="4">${data.error || 'Failed to load leaderboard.'}</td></tr>`;
+                    leaderboardBody.innerHTML = `<tr><td colspan="4">${escapeHtml(data.error || 'Failed to load leaderboard.')}</td></tr>`;
                     return;
                 }
 
@@ -782,9 +782,9 @@
                     const displayKey = `${currentPeriod}_change_display`;
                     leaderboardBody.innerHTML = rows.map((row, idx) => `
                         <tr>
-                            <td>${row.agent_name || ''}</td>
-                            <td><span class="portfolio-hover-target" data-row-index="${idx}">${row.portfolio_name || ''}</span></td>
-                            <td>${row.model_name || ''}</td>
+                            <td>${escapeHtml(row.agent_name || '')}</td>
+                            <td><span class="portfolio-hover-target" data-row-index="${idx}">${escapeHtml(row.portfolio_name || '')}</span></td>
+                            <td>${escapeHtml(row.model_name || '')}</td>
                             <td>${changeCellHtml(row[pctKey], row[deltaKey], row[displayKey])}</td>
                         </tr>
                     `).join('');
@@ -836,18 +836,18 @@
                 const analysis = await analysisRes.json();
 
                 if (!analysisRes.ok) {
-                    analysisGrid.innerHTML = `<div class="analysis-item">${analysis.error || 'Analysis failed.'}</div>`;
+                    analysisGrid.innerHTML = `<div class="analysis-item">${escapeHtml(analysis.error || 'Analysis failed.')}</div>`;
                     analysisMeta.textContent = '';
                     return;
                 }
 
                 const volLabel = at === 'crypto' ? '24h Volume' : 'Volume';
                 analysisGrid.innerHTML = `
-                    <div class="analysis-item action-item"><strong>Action</strong><br>${analysis.ai_recommendation.action} (confidence: ${analysis.ai_recommendation.confidence}%)</div>
-                    <div class="analysis-item"><strong>Trend Analysis</strong><br>${analysis.stock_analysis.summary}</div>
-                    <div class="analysis-item"><strong>Sentiment Analysis</strong><br>${analysis.sentiment_analysis.summary}</div>
-                    <div class="analysis-item"><strong>Social Analysis</strong><br>${(analysis.social_analysis && analysis.social_analysis.summary) || (analysis.media_analysis && analysis.media_analysis.summary) || 'Social analysis unavailable.'}</div>
-                    <div class="analysis-item"><strong>AI Recommendation</strong><br>${analysis.ai_recommendation.summary}</div>
+                    <div class="analysis-item action-item"><strong>Action</strong><br>${escapeHtml(analysis.ai_recommendation.action)} (confidence: ${escapeHtml(String(analysis.ai_recommendation.confidence))}%)</div>
+                    <div class="analysis-item"><strong>Trend Analysis</strong><br>${escapeHtml(analysis.stock_analysis.summary)}</div>
+                    <div class="analysis-item"><strong>Sentiment Analysis</strong><br>${escapeHtml(analysis.sentiment_analysis.summary)}</div>
+                    <div class="analysis-item"><strong>Social Analysis</strong><br>${escapeHtml((analysis.social_analysis && analysis.social_analysis.summary) || (analysis.media_analysis && analysis.media_analysis.summary) || 'Social analysis unavailable.')}</div>
+                    <div class="analysis-item"><strong>AI Recommendation</strong><br>${escapeHtml(analysis.ai_recommendation.summary)}</div>
                 `;
 
                 if (at === 'option' && analysis.options_summary) {
@@ -900,7 +900,7 @@
 
                 const tradesData = await tradesRes.json();
                 if (!tradesRes.ok) {
-                    congressBody.innerHTML = `<tr><td colspan="6">${tradesData.error || 'Failed to load.'}</td></tr>`;
+                    congressBody.innerHTML = `<tr><td colspan="6">${escapeHtml(tradesData.error || 'Failed to load.')}</td></tr>`;
                     return;
                 }
 

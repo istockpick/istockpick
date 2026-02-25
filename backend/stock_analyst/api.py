@@ -224,8 +224,16 @@ def _resolve_symbol(stock: str, asset_type: str = "stock") -> Optional[str]:
 
     try:
         import yfinance as yf
+        import concurrent.futures
 
-        search = yf.Search(query=candidate, max_results=5, news_count=0)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                lambda: yf.Search(query=candidate, max_results=5, news_count=0)
+            )
+            try:
+                search = future.result(timeout=5)
+            except concurrent.futures.TimeoutError:
+                return None
         quotes = search.quotes or []
         for quote in quotes:
             symbol = quote.get("symbol")
