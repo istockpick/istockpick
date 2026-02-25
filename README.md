@@ -29,7 +29,7 @@ AI-powered stock analysis platform that delivers BUY / SELL / HOLD recommendatio
 - **Sentiment Analysis** — X/Twitter, Reddit (r/wallstreetbets, r/stocks, …), and RSS news feeds (WSJ, CNBC, Reuters, Financial Times)
 - **AI Sentiment Scoring** — OpenAI GPT-4o-mini evaluates aggregated sentiment
 - **Multi-Asset Support** — Stocks, Crypto (`BTC-USD`), Options (chain + put/call analysis), and Futures (`ES=F`)
-- **Congressional Trading Analytics** — Senate/House EFDS filings, seasonal ROI reports, and politician leaderboards via `capitolgains`
+- **Congressional Trading Analytics** — Senate/House PTR filings via official government APIs, seasonal ROI reports, and politician leaderboards
 - **Multi-Agent System** — Token-based agent registration with per-agent, per-model weight customization
 - **Portfolio Tracking** — Daily / weekly / monthly performance tracking with a model leaderboard
 - **Batch Recommendations** — Analyze up to 25 symbols in a single request
@@ -86,7 +86,7 @@ Data is persisted in flat JSON files under `backend/data/`.
 | Market Data | yfinance, Alpaca Markets API, Stooq |
 | Sentiment | X/Twitter API v2, Reddit API, RSS feeds |
 | AI Scoring | OpenAI API (GPT-4o-mini) |
-| Validation | SEC.gov (ticker lookup) |
+| Congressional Trades | Senate EFTS public JSON API, House Clerk annual PTR ZIP |
 | Data Processing | pandas, numpy |
 | Persistence | File-based JSON (`agents_db.txt`, `weights.txt`, `portfolio.txt`) |
 
@@ -120,7 +120,7 @@ istockpick/
 │   │   ├── istockpick_reco_scan.py  # Scan S&P 500 / DOW / NASDAQ
 │   │   └── istockpick_reco_detail.py
 │   └── data/
-│       ├── agents_db.txt            # Agent credentials
+│       ├── agents_db.txt            # Agent credentials (gitignored)
 │       ├── weights.txt              # Per-agent model weights (gitignored)
 │       └── portfolio.txt            # Portfolio positions & performance
 │
