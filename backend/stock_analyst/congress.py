@@ -145,52 +145,187 @@ def fetch_trades(year: int = None, chamber: str = "all") -> list[dict]:
 
 
 def _fetch_from_provider(year: int, chamber: str) -> list[dict]:
-    """Try capitolgains first, fall back to an empty list with a warning."""
-    try:
-        return _fetch_via_capitolgains(year, chamber)
-    except Exception as exc:
-        logger.warning("capitolgains fetch failed for %s/%s: %s", year, chamber, exc)
-        return []
-
-
-def _fetch_via_capitolgains(year: int, chamber: str) -> list[dict]:
-    """Pull PTR data via the capitolgains package."""
-    try:
-        from capitolgains import Congress
-    except ImportError:
-        logger.warning("capitolgains package not installed; returning empty trades")
-        return []
-
-    congress = Congress()
-    raw_reports = []
-
+    """Try government disclosure APIs, fall back to empty list with a warning."""
     try:
         if chamber == "senate":
-            raw_reports = congress.get_senate_disclosures(
-                report_type="ptr",
-                year=year,
-            )
+            return _fetch_via_senate_efts(year)
         elif chamber == "house":
-            raw_reports = congress.get_house_disclosures(
-                report_type="ptr",
-                year=year,
-            )
+            return _fetch_via_house_ptr(year)
+        return []
     except Exception as exc:
-        logger.warning("capitolgains query error: %s", exc)
+        logger.warning("Congress fetch failed for %s/%s: %s", year, chamber, exc)
         return []
 
-    if not isinstance(raw_reports, list):
-        raw_reports = []
 
-    normalized = []
-    for raw in raw_reports:
-        if not isinstance(raw, dict):
-            continue
-        trade = _normalize_trade(raw, chamber)
-        if trade:
-            normalized.append(trade)
+# ---------------------------------------------------------------------------
+# Senate: EFTS public JSON search API
+# https://efts.senate.gov/LATEST/search-index
+# ---------------------------------------------------------------------------
+_SENATE_EFTS_BASE = "https://efts.senate.gov/LATEST/search-index"
+_SENATE_EFTS_PAGE_SIZE = 100
 
-    return normalized
+
+def _fetch_via_senate_efts(year: int) -> list[dict]:
+    """Fetch Senate PTR trades via the EFTS public JSON search API.
+
+    The EFTS endpoint is a free, unauthenticated government API that returns
+    PTR filing records (including individual transactions) for a date range.
+    """
+    import urllib.request
+    import urllib.parse
+
+    trades: list[dict] = []
+    offset = 0
+
+    while True:
+        params = urllib.parse.urlencode({
+            "q": '""',
+            "dateRange": "custom",
+            "startDate": f"{year}-01-01",
+            "endDate": f"{year}-12-31",
+            "limit": _SENATE_EFTS_PAGE_SIZE,
+            "offset": offset,
+        })
+        url = f"{_SENATE_EFTS_BASE}?{params}"
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "iStockPick/1.0 (admin@istockpick.ai)"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            logger.warning("Senate EFTS request failed (offset=%s): %s", offset, exc)
+            break
+
+        hits = payload.get("hits") or []
+        if not hits:
+            break
+
+        for hit in hits:
+            # The EFTS response may nest fields under "_source" or flatten them.
+            src = hit.get("_source") or hit
+
+            first = (src.get("first_name") or "").strip().title()
+            last = (src.get("last_name") or "").strip().title()
+            politician = f"{first} {last}".strip()
+            filing_date = (src.get("date_filed") or src.get("filing_date") or "").strip()
+
+            # Transactions may be embedded directly in the hit
+            transactions = src.get("transactions") or []
+            if transactions:
+                for txn in transactions:
+                    ticker = (
+                        txn.get("ticker")
+                        or txn.get("asset_ticker")
+                        or txn.get("symbol")
+                        or ""
+                    ).strip().upper()
+                    if not ticker or ticker in ("--", "N/A", ""):
+                        continue
+                    raw = {
+                        "member_name": politician,
+                        "ticker": ticker,
+                        "transaction_type": txn.get("transaction_type") or txn.get("type") or "",
+                        "transaction_date": txn.get("transaction_date") or txn.get("date") or filing_date,
+                        "amount": txn.get("amount") or txn.get("amount_range") or "",
+                    }
+                    trade = _normalize_trade(raw, "senate")
+                    if trade:
+                        trades.append(trade)
+            else:
+                # Flat record — ticker/action may be at the top level
+                ticker = (
+                    src.get("ticker")
+                    or src.get("asset_ticker")
+                    or src.get("symbol")
+                    or ""
+                ).strip().upper()
+                if ticker and ticker not in ("--", "N/A"):
+                    raw = {
+                        "member_name": politician,
+                        "ticker": ticker,
+                        "transaction_type": src.get("transaction_type") or src.get("type") or "",
+                        "transaction_date": src.get("transaction_date") or filing_date,
+                        "amount": src.get("amount") or src.get("amount_range") or "",
+                    }
+                    trade = _normalize_trade(raw, "senate")
+                    if trade:
+                        trades.append(trade)
+
+        total = payload.get("total") or 0
+        offset += len(hits)
+        if offset >= total or len(hits) < _SENATE_EFTS_PAGE_SIZE:
+            break
+
+    logger.info("Senate EFTS: fetched %d trades for %d", len(trades), year)
+    return trades
+
+
+# ---------------------------------------------------------------------------
+# House: House Clerk annual PTR ZIP
+# https://disclosures.house.gov/<year>FDPtr.zip
+# ---------------------------------------------------------------------------
+_HOUSE_PTR_URL = "https://disclosures.house.gov/{year}FDPtr.zip"
+
+
+def _fetch_via_house_ptr(year: int) -> list[dict]:
+    """Fetch House PTR trades from the House Clerk's annual disclosure ZIP.
+
+    The House Clerk publishes a ZIP for each year at a stable URL.  Inside is
+    an XML file with every PTR transaction filed during that year.
+    """
+    import urllib.request
+    import zipfile
+    import io
+    import xml.etree.ElementTree as ET
+
+    url = _HOUSE_PTR_URL.format(year=year)
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "iStockPick/1.0 (admin@istockpick.ai)"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw_zip = resp.read()
+    except Exception as exc:
+        logger.warning("House PTR ZIP download failed for %d: %s", year, exc)
+        return []
+
+    trades: list[dict] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw_zip)) as zf:
+            xml_names = [n for n in zf.namelist() if n.lower().endswith(".xml")]
+            if not xml_names:
+                logger.warning("House PTR ZIP for %d contains no XML files", year)
+                return []
+
+            for xml_name in xml_names:
+                with zf.open(xml_name) as f:
+                    tree = ET.parse(f)
+                root = tree.getroot()
+
+                for txn in root.iter("Transaction"):
+                    first = (txn.findtext("FirstName") or "").strip().title()
+                    last = (txn.findtext("LastName") or "").strip().title()
+                    politician = f"{first} {last}".strip()
+                    ticker = (txn.findtext("Ticker") or "").strip().upper()
+                    if not ticker or ticker in ("--", "N/A"):
+                        continue
+                    raw = {
+                        "member_name": politician,
+                        "ticker": ticker,
+                        "transaction_type": (txn.findtext("TransactionType") or "").strip(),
+                        "transaction_date": (txn.findtext("TransactionDate") or "").strip(),
+                        "amount": (txn.findtext("Amount") or "").strip(),
+                    }
+                    trade = _normalize_trade(raw, "house")
+                    if trade:
+                        trades.append(trade)
+    except Exception as exc:
+        logger.warning("House PTR ZIP parse error for %d: %s", year, exc)
+        return []
+
+    logger.info("House PTR ZIP: fetched %d trades for %d", len(trades), year)
+    return trades
 
 
 def compute_trade_roi(trades: list[dict]) -> list[dict]:
