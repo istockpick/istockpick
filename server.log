@@ -1,10 +1,18 @@
 /Users/richliu/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
   warnings.warn(
-127.0.0.1 - - [23/Feb/2026 19:04:09] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [23/Feb/2026 19:04:09] "GET /api/v1/model-leaderboard?period=weekly HTTP/1.1" 200 -
-127.0.0.1 - - [23/Feb/2026 19:04:14] "GET /lookup?q=rblx&asset_type=stock HTTP/1.1" 200 -
-x media retrieval unavailable for symbol=RBLX: bearer token not configured
-major news retrieval network error for source=Reuters symbol=RBLX feed=https://feeds.reuters.com/reuters/businessNews error=<urlopen error [Errno 8] nodename nor servname provided, or not known>
-media source status x=unavailable symbol=RBLX reason=X_BEARER_TOKEN/TWITTER_BEARER_TOKEN not configured
-media source status major_news=error symbol=RBLX reason=Reuters: <urlopen error [Errno 8] nodename nor servname provided, or not known>
-127.0.0.1 - - [23/Feb/2026 19:04:16] "GET /analyze?q=RBLX&asset_type=stock HTTP/1.1" 200 -
+127.0.0.1 - - [25/Feb/2026 09:13:26] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [25/Feb/2026 09:13:27] "GET /api/v1/model-leaderboard?period=weekly HTTP/1.1" 200 -
+127.0.0.1 - - [25/Feb/2026 09:13:30] "GET /lookup?q=aapl&asset_type=stock HTTP/1.1" 200 -
+x search retrieval returned no parsable posts for symbol=AAPL
+reddit search retrieval returned no parsable posts for symbol=AAPL forums=wallstreetbets,investing,aapl query=AAPL
+media ai scoring http error for source=Major News symbol=AAPL model=gpt-4o-mini code=429 reason=Too Many Requests
+media source status x=error symbol=AAPL reason=No parsable X search results found
+media source status reddit=error symbol=AAPL reason=No parsable Reddit search results found
+127.0.0.1 - - [25/Feb/2026 09:13:35] "GET /analyze?q=AAPL&asset_type=stock HTTP/1.1" 200 -
+127.0.0.1 - - [25/Feb/2026 09:13:40] "GET /lookup?q=pltr&asset_type=stock HTTP/1.1" 200 -
+x search retrieval returned no parsable posts for symbol=PLTR
+reddit search retrieval returned no parsable posts for symbol=PLTR forums=wallstreetbets,investing,pltr query=PLTR
+media ai scoring http error for source=Major News symbol=PLTR model=gpt-4o-mini code=429 reason=Too Many Requests
+media source status x=error symbol=PLTR reason=No parsable X search results found
+media source status reddit=error symbol=PLTR reason=No parsable Reddit search results found
+127.0.0.1 - - [25/Feb/2026 09:13:46] "GET /analyze?q=PLTR&asset_type=stock HTTP/1.1" 200 -

@@ -1,4 +1,5 @@
 import csv
+import html as html_lib
 import io
 import json
 import logging
@@ -215,6 +216,13 @@ def _extract_json_object(text: str) -> Optional[dict]:
     return None
 
 
+def _json_unescape_maybe(value: str) -> str:
+    try:
+        return json.loads(f"\"{value}\"")
+    except Exception:
+        return value
+
+
 def _score_mentions_with_ai(source_name: str, symbol: str, company: Optional[str], mentions: list[dict]) -> dict:
     key_detected = bool((os.getenv("OPENAI_API_KEY") or "").strip())
     if not mentions:
@@ -404,13 +412,34 @@ def _combine_media_scores(source_payloads: dict, source_scores: dict) -> dict:
 
 
 def _fetch_x_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
+    mode = (os.getenv("X_SOURCE_MODE") or "search").strip().lower()
+    if mode not in {"search", "api", "auto"}:
+        logger.warning("invalid X_SOURCE_MODE=%s; falling back to search", mode)
+        mode = "search"
+
+    if mode == "api":
+        return _fetch_x_posts_api(symbol, company, limit)
+    if mode == "auto":
+        status, items, reason = _fetch_x_posts_search(symbol, company, limit)
+        if status == "ok" and items:
+            return status, items, reason
+        api_status, api_items, api_reason = _fetch_x_posts_api(symbol, company, limit)
+        if api_status == "ok" and api_items:
+            return api_status, api_items, api_reason
+        if status != "ok":
+            return status, items, reason
+        return api_status, api_items, api_reason
+    return _fetch_x_posts_search(symbol, company, limit)
+
+
+def _fetch_x_posts_api(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
     bearer = (
         os.getenv("X_BEARER_TOKEN")
         or os.getenv("TWITTER_BEARER_TOKEN")
         or ""
     ).strip()
     if not bearer:
-        logger.warning("x media retrieval unavailable for symbol=%s: bearer token not configured", symbol)
+        logger.warning("x api retrieval unavailable for symbol=%s: bearer token not configured", symbol)
         return "unavailable", [], "X_BEARER_TOKEN/TWITTER_BEARER_TOKEN not configured"
 
     query = f"({_build_media_query(symbol, company)}) (stock OR shares OR earnings) lang:en -is:retweet"
@@ -446,20 +475,82 @@ def _fetch_x_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str
                     created_at=row.get("created_at"),
                 )
             )
+            if len(items) >= limit:
+                break
         return "ok", _dedupe_media_items(items, limit), None
     except urllib.error.HTTPError as exc:
-        logger.warning("x media retrieval http error for symbol=%s code=%s reason=%s", symbol, getattr(exc, "code", None), getattr(exc, "reason", exc))
+        logger.warning("x api retrieval http error for symbol=%s code=%s reason=%s", symbol, getattr(exc, "code", None), getattr(exc, "reason", exc))
         return "error", [], str(exc)
     except urllib.error.URLError as exc:
-        logger.warning("x media retrieval network error for symbol=%s error=%s", symbol, exc)
+        logger.warning("x api retrieval network error for symbol=%s error=%s", symbol, exc)
         return "error", [], str(exc)
     except Exception as exc:
-        logger.exception("x media retrieval failed for symbol=%s", symbol)
+        logger.exception("x api retrieval failed for symbol=%s", symbol)
+        return "error", [], str(exc)
+
+
+def _fetch_x_posts_search(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
+    query = f"({_build_media_query(symbol, company)}) (stock OR shares OR earnings) lang:en -is:retweet"
+    params = urllib.parse.urlencode(
+        {
+            "q": query,
+            "src": "typed_query",
+            "f": "live",
+        }
+    )
+    url = f"https://x.com/search?{params}"
+
+    try:
+        html = _fetch_text(url)
+        # Best-effort extraction from embedded page payloads. X may change markup anytime.
+        rest_ids = re.findall(r'"rest_id":"(\d+)"', html)
+        full_texts = re.findall(r'"full_text":"((?:\\.|[^"\\])*)"', html)
+        created_ats = re.findall(r'"created_at":"((?:\\.|[^"\\])*)"', html)
+        texts = [_json_unescape_maybe(t).strip() for t in full_texts if _json_unescape_maybe(t).strip()]
+        created_vals = [_json_unescape_maybe(t).strip() for t in created_ats]
+
+        items = []
+        seen_ids = set()
+        for idx, tweet_id in enumerate(rest_ids):
+            if tweet_id in seen_ids:
+                continue
+            seen_ids.add(tweet_id)
+            text = texts[idx] if idx < len(texts) else ""
+            if not text:
+                continue
+            created_at = created_vals[idx] if idx < len(created_vals) else None
+            items.append(
+                _normalize_media_item(
+                    source="x",
+                    publisher="X",
+                    title=text[:180],
+                    text=text,
+                    url=f"https://x.com/i/web/status/{tweet_id}",
+                    created_at=created_at,
+                )
+            )
+            if len(items) >= limit:
+                break
+        if not items:
+            logger.warning("x search retrieval returned no parsable posts for symbol=%s", symbol)
+            return "error", [], "No parsable X search results found"
+        return "ok", _dedupe_media_items(items, limit), None
+    except urllib.error.HTTPError as exc:
+        logger.warning("x search retrieval http error for symbol=%s code=%s reason=%s", symbol, getattr(exc, "code", None), getattr(exc, "reason", exc))
+        return "error", [], str(exc)
+    except urllib.error.URLError as exc:
+        logger.warning("x search retrieval network error for symbol=%s error=%s", symbol, exc)
+        return "error", [], str(exc)
+    except Exception as exc:
+        logger.exception("x search retrieval failed for symbol=%s", symbol)
         return "error", [], str(exc)
 
 
 def _fetch_reddit_forum_posts(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
-    forums = ["wallstreetbets", "stocks", "investing", "SecurityAnalysis"]
+    forums = ["wallstreetbets", "investing"]
+    company_forum = _guess_company_subreddit(symbol, company)
+    if company_forum and company_forum not in forums:
+        forums.append(company_forum)
     query = _build_media_query(symbol, company)
     all_items = []
 
@@ -468,42 +559,119 @@ def _fetch_reddit_forum_posts(symbol: str, company: Optional[str], limit: int) -
             params = urllib.parse.urlencode(
                 {
                     "q": query,
-                    "restrict_sr": "1",
+                    "restrict_sr": "on",
                     "sort": "new",
                     "t": "week",
-                    "limit": str(max(5, min(limit, 50))),
                 }
             )
-            url = f"https://www.reddit.com/r/{forum}/search.json?{params}"
-            payload = _fetch_json(url, headers={"User-Agent": "iStockPick/1.0"})
-            children = (((payload.get("data") or {}).get("children")) or [])
-            for entry in children:
-                data = (entry or {}).get("data") or {}
-                title = (data.get("title") or "").strip()
+            url = f"https://old.reddit.com/r/{forum}/search/?{params}"
+            try:
+                page_html = _fetch_text(url)
+            except urllib.error.HTTPError as exc:
+                logger.warning(
+                    "reddit search forum fetch http error for symbol=%s forum=%s code=%s reason=%s",
+                    symbol,
+                    forum,
+                    getattr(exc, "code", None),
+                    getattr(exc, "reason", exc),
+                )
+                continue
+            except urllib.error.URLError as exc:
+                logger.warning(
+                    "reddit search forum fetch network error for symbol=%s forum=%s error=%s",
+                    symbol,
+                    forum,
+                    exc,
+                )
+                continue
+
+            title_matches = re.findall(
+                r'<a[^>]+class="[^"]*search-title[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+                page_html,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            time_matches = re.findall(
+                r'<time[^>]+datetime="([^"]+)"',
+                page_html,
+                flags=re.IGNORECASE,
+            )
+            logger.info(
+                "reddit search forum parse symbol=%s forum=%s title_matches=%s time_matches=%s",
+                symbol,
+                forum,
+                len(title_matches),
+                len(time_matches),
+            )
+
+            forum_added = 0
+            for idx, (link, raw_title) in enumerate(title_matches):
+                title = _strip_html(raw_title)
                 if not title:
                     continue
-                permalink = (data.get("permalink") or "").strip()
-                post_url = f"https://www.reddit.com{permalink}" if permalink else ""
+                post_url = html_lib.unescape(link).strip()
+                created_at = time_matches[idx] if idx < len(time_matches) else None
                 all_items.append(
                     _normalize_media_item(
                         source="reddit",
                         publisher=f"r/{forum}",
                         title=title,
-                        text=_strip_html(data.get("selftext") or ""),
+                        text="",
                         url=post_url,
-                        created_at=_iso_from_epoch(data.get("created_utc")),
+                        created_at=created_at,
                     )
                 )
-        return "ok", _dedupe_media_items(all_items, limit), None
+                forum_added += 1
+                if len(all_items) >= max(5, min(limit * len(forums), 100)):
+                    break
+            logger.info(
+                "reddit search forum results symbol=%s forum=%s added=%s cumulative=%s",
+                symbol,
+                forum,
+                forum_added,
+                len(all_items),
+            )
+        deduped = _dedupe_media_items(all_items, limit)
+        if not deduped:
+            logger.warning(
+                "reddit search retrieval returned no parsable posts for symbol=%s forums=%s query=%s",
+                symbol,
+                ",".join(forums),
+                query,
+            )
+            return "error", [], "No parsable Reddit search results found"
+        logger.info(
+            "reddit search retrieval success symbol=%s raw_items=%s deduped_items=%s",
+            symbol,
+            len(all_items),
+            len(deduped),
+        )
+        return "ok", deduped, None
     except urllib.error.HTTPError as exc:
-        logger.warning("reddit media retrieval http error for symbol=%s code=%s reason=%s", symbol, getattr(exc, "code", None), getattr(exc, "reason", exc))
+        logger.warning("reddit search retrieval http error for symbol=%s code=%s reason=%s", symbol, getattr(exc, "code", None), getattr(exc, "reason", exc))
         return "error", [], str(exc)
     except urllib.error.URLError as exc:
-        logger.warning("reddit media retrieval network error for symbol=%s error=%s", symbol, exc)
+        logger.warning("reddit search retrieval network error for symbol=%s error=%s", symbol, exc)
         return "error", [], str(exc)
     except Exception as exc:
-        logger.exception("reddit media retrieval failed for symbol=%s", symbol)
+        logger.exception("reddit search retrieval failed for symbol=%s", symbol)
         return "error", [], str(exc)
+
+
+def _guess_company_subreddit(symbol: str, company: Optional[str]) -> str:
+    # Best-effort guess: prefer a cleaned company-name subreddit, fallback to the ticker.
+    candidates = []
+    if company:
+        cleaned = re.sub(r"\b(inc|corp|corporation|company|co|ltd|plc|holdings?)\b", "", company, flags=re.IGNORECASE)
+        cleaned = re.sub(r"[^A-Za-z0-9]+", "", cleaned).strip().lower()
+        if cleaned:
+            candidates.append(cleaned)
+    ticker = re.sub(r"[^A-Za-z0-9]+", "", (symbol or "")).strip().lower()
+    if ticker:
+        candidates.append(ticker)
+    for candidate in candidates:
+        if candidate not in {"wallstreetbets", "investing"}:
+            return candidate
+    return ticker or "stocks"
 
 
 def _fetch_news_rss_items(source: str, feed_url: str, symbol: str, company: Optional[str], limit: int) -> list[dict]:
@@ -538,33 +706,67 @@ def _fetch_news_rss_items(source: str, feed_url: str, symbol: str, company: Opti
     return items
 
 
+def _build_google_news_site_search_rss_url(symbol: str, company: Optional[str], domain: str) -> str:
+    query_parts = [symbol.upper()]
+    if company:
+        cleaned = company.strip()
+        if cleaned and cleaned.upper() != symbol.upper():
+            query_parts.append(f"\"{cleaned}\"")
+    query_parts.append(f"site:{domain}")
+    query = " ".join(query_parts)
+    params = urllib.parse.urlencode(
+        {
+            "q": query,
+            "hl": "en-US",
+            "gl": "US",
+            "ceid": "US:en",
+        }
+    )
+    return f"https://news.google.com/rss/search?{params}"
+
+
 def _fetch_major_news(symbol: str, company: Optional[str], limit: int) -> tuple[str, list[dict], Optional[str]]:
     feeds = {
-        "WSJ": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-        "CNBC": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-        "Reuters": "https://feeds.reuters.com/reuters/businessNews",
-        "Financial Times": "https://www.ft.com/markets?format=rss",
+        "WSJ": "wsj.com",
+        "CNBC": "cnbc.com",
+        "Reuters": "reuters.com",
+        "Financial Times": "ft.com",
     }
     all_items = []
     errors = []
-    for source, url in feeds.items():
+    for source, domain in feeds.items():
+        search_feed_url = _build_google_news_site_search_rss_url(symbol, company, domain)
         try:
-            all_items.extend(_fetch_news_rss_items(source, url, symbol, company, limit))
+            all_items.extend(_fetch_news_rss_items(source, search_feed_url, symbol, company, limit))
         except urllib.error.HTTPError as exc:
             logger.warning(
-                "major news retrieval http error for source=%s symbol=%s feed=%s code=%s reason=%s",
+                "major news search http error for source=%s symbol=%s domain=%s feed=%s code=%s reason=%s",
                 source,
                 symbol,
-                url,
+                domain,
+                search_feed_url,
                 getattr(exc, "code", None),
                 getattr(exc, "reason", exc),
             )
             errors.append(f"{source}: {exc}")
         except urllib.error.URLError as exc:
-            logger.warning("major news retrieval network error for source=%s symbol=%s feed=%s error=%s", source, symbol, url, exc)
+            logger.warning(
+                "major news search network error for source=%s symbol=%s domain=%s feed=%s error=%s",
+                source,
+                symbol,
+                domain,
+                search_feed_url,
+                exc,
+            )
             errors.append(f"{source}: {exc}")
         except Exception as exc:
-            logger.exception("major news retrieval failed for source=%s symbol=%s feed=%s", source, symbol, url)
+            logger.exception(
+                "major news search failed for source=%s symbol=%s domain=%s feed=%s",
+                source,
+                symbol,
+                domain,
+                search_feed_url,
+            )
             errors.append(f"{source}: {exc}")
 
     status = "ok" if all_items else ("error" if errors else "ok")
