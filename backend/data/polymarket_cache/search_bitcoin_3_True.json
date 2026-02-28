@@ -1,0 +1,261 @@
+[
+  {
+    "title": "MicroStrategy sells any Bitcoin by ___ ?",
+    "slug": "microstrategy-sell-any-bitcoin-in-2025",
+    "description": "This market will resolve to \"Yes\" if MicroStrategy sells any of its Bitcoin by December 31, 2025, 11:59 PM ET. Otherwise, this market will resolve to \"No\".\n\nThe primary resolution source for this market will be information from MSTR and on-chain data, however a consensus of credible reporting will also be used.",
+    "active": true,
+    "closed": false,
+    "liquidity": 205968.73564,
+    "volume": 20809630.824152,
+    "markets": [
+      {
+        "question": "MicroStrategy sells any Bitcoin in 2025?",
+        "condition_id": "0x19ee98e348c0ccb341d1b9566fa14521566e9b2ea7aed34dc407a0ec56be36a2",
+        "question_id": "",
+        "slug": "microstrategy-sell-any-bitcoin-in-2025",
+        "active": true,
+        "closed": true,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.0,
+          1.0
+        ],
+        "tokens": [],
+        "volume": 17976157.529867,
+        "volume24hr": null,
+        "liquidity": null,
+        "end_date": "2025-12-31T12:00:00Z",
+        "description": "This market will resolve to \"Yes\" if MicroStrategy sells any of its Bitcoin by December 31, 2025, 11:59 PM ET. Otherwise, this market will resolve to \"No\".\n\nThe primary resolution source for this market will be information from MSTR and on-chain data, however a consensus of credible reporting will also be used."
+      },
+      {
+        "question": "MicroStrategy sells any Bitcoin by December 31, 2026?",
+        "condition_id": "0x8213d395e079614d6c4d7f4cbb9be9337ab51648a21cc2a334ae8f1966d164b4",
+        "question_id": "",
+        "slug": "microstrategy-sells-any-bitcoin-by-december-31-2026",
+        "active": true,
+        "closed": false,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.14,
+          0.86
+        ],
+        "tokens": [],
+        "volume": 351323.255002,
+        "volume24hr": 1531.8569119999997,
+        "liquidity": 13653.5822,
+        "end_date": "2026-07-01T04:00:00Z",
+        "description": "This market will resolve to \"Yes\" if MicroStrategy sells any of its Bitcoin by 11:59 PM ET on the date specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe primary resolution source for this market will be information from MSTR and on-chain data, however a consensus of credible reporting will also be used."
+      },
+      {
+        "question": "MicroStrategy sells any Bitcoin by March 31, 2026?",
+        "condition_id": "0x9a4db724246b51cbfbc8000dbbd6b54d72b057767c3690e63d940b26d78c6cb0",
+        "question_id": "",
+        "slug": "microstrategy-sells-any-bitcoin-by-march-31-2026",
+        "active": true,
+        "closed": false,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.016,
+          0.984
+        ],
+        "tokens": [],
+        "volume": 1850568.171263,
+        "volume24hr": 4689.412294,
+        "liquidity": 143240.59894,
+        "end_date": "",
+        "description": "This market will resolve to \"Yes\" if MicroStrategy sells any of its Bitcoin by 11:59 PM ET on the date specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe primary resolution source for this market will be information from MSTR and on-chain data, however a consensus of credible reporting will also be used."
+      },
+      {
+        "question": "MicroStrategy sells any Bitcoin by June 30, 2026?",
+        "condition_id": "0x8e7a03cb1970e2ad6533b01892403516b6b3f5b5fa90ed7d104c28b27e40ba00",
+        "question_id": "",
+        "slug": "microstrategy-sells-any-bitcoin-by-june-30-2026",
+        "active": true,
+        "closed": false,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.065,
+          0.935
+        ],
+        "tokens": [],
+        "volume": 631581.86802,
+        "volume24hr": 4964.249141,
+        "liquidity": 49074.5545,
+        "end_date": "2026-07-01T04:00:00Z",
+        "description": "This market will resolve to \"Yes\" if MicroStrategy sells any of its Bitcoin by 11:59 PM ET on the date specified in the title. Otherwise, this market will resolve to \"No\".\n\nThe primary resolution source for this market will be information from MSTR and on-chain data, however a consensus of credible reporting will also be used."
+      }
+    ],
+    "created_at": "2024-12-31T16:02:31.965903Z",
+    "end_date": "2025-12-31T12:00:00Z"
+  },
+  {
+    "title": "Kraken IPO by ___ ?",
+    "slug": "kraken-ipo-in-2025",
+    "description": "This market will resolve to \"Yes\" if Kraken (US-based cryptocurrency exchange) completes an Initial Public Offering (IPO) by December 31, 2025, 11:59 PM ET, as confirmed by official company announcements or credible news sources. The IPO refers to the first sale of stock by Kraken to the public on any recognized stock exchange.\n\nIf Kraken merges with another entity, is acquired, or ceases to exist before the market resolves, the market will also resolve to \"No\".\n\nThis market will resolve early if Kraken completes an IPO by December 31, 2025, 11:59 PM ET.\n\nThe resolution source for this market is a consensus of credible reporting.",
+    "active": true,
+    "closed": false,
+    "liquidity": 6148.7092,
+    "volume": 1058712.099335,
+    "markets": [
+      {
+        "question": "Kraken IPO in 2025?",
+        "condition_id": "0x5b70123b2c37355840b38bc60752919dae7ca5fe11d5e5184aa69be01b9db458",
+        "question_id": "",
+        "slug": "kraken-ipo-in-2025",
+        "active": true,
+        "closed": true,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.0,
+          1.0
+        ],
+        "tokens": [],
+        "volume": 494516.53254,
+        "volume24hr": null,
+        "liquidity": null,
+        "end_date": "2025-12-31T12:00:00Z",
+        "description": "This market will resolve to \"Yes\" if Kraken (US-based cryptocurrency exchange) completes an Initial Public Offering (IPO) by December 31, 2025, 11:59 PM ET, as confirmed by official company announcements or credible news sources. The IPO refers to the first sale of stock by Kraken to the public on any recognized stock exchange.\n\nIf Kraken merges with another entity, is acquired, or ceases to exist before the market resolves, the market will also resolve to \"No\".\n\nThis market will resolve early if Kraken completes an IPO by December 31, 2025, 11:59 PM ET.\n\nThe resolution source for this market is a consensus of credible reporting."
+      },
+      {
+        "question": "Kraken IPO by March 31, 2026?",
+        "condition_id": "0x9b3c3177fe473124c756b01e123b4b03e3a99880844ed8dea21b0a7879ca04aa",
+        "question_id": "",
+        "slug": "kraken-ipo-by-march-31-2026",
+        "active": true,
+        "closed": false,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.165,
+          0.835
+        ],
+        "tokens": [],
+        "volume": 323424.601062,
+        "volume24hr": 3726.65536,
+        "liquidity": 1122.2984,
+        "end_date": "2026-04-01T04:00:00Z",
+        "description": "This market will resolve to \"Yes\" if Kraken completes an Initial Public Offering (IPO) by the listed date ET, as confirmed by official company announcements and credible news sources. Otherwise, this market will resolve to \"No.\"\n\nThe IPO refers to the first sale of stock by the listed company to the public on any recognized stock exchange.\n\nIf Kraken is acquired by another company that is already public, this market will immediately resolve to \"No.\"\n\nThe resolution source for this market is a consensus of credible reporting."
+      },
+      {
+        "question": "Kraken IPO by December 31, 2026?",
+        "condition_id": "0xced0cb8725bad43d78fda0cd0e5fa9e31804625cb3502b2c7897f8e8f7fa9e1f",
+        "question_id": "",
+        "slug": "kraken-ipo-by-december-31-2026",
+        "active": true,
+        "closed": false,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.725,
+          0.275
+        ],
+        "tokens": [],
+        "volume": 240770.965733,
+        "volume24hr": 7072.918647,
+        "liquidity": 5026.4108,
+        "end_date": "2027-01-01T05:00:00Z",
+        "description": "This market will resolve to \"Yes\" if Kraken completes an Initial Public Offering (IPO) by the listed date ET, as confirmed by official company announcements and credible news sources. Otherwise, this market will resolve to \"No.\"\n\nThe IPO refers to the first sale of stock by the listed company to the public on any recognized stock exchange.\n\nIf Kraken is acquired by another company that is already public, this market will immediately resolve to \"No.\"\n\nThe resolution source for this market is a consensus of credible reporting."
+      }
+    ],
+    "created_at": "2024-12-31T18:18:36.692417Z",
+    "end_date": "2025-12-31T12:00:00Z"
+  },
+  {
+    "title": "Macron out by...?",
+    "slug": "macron-out-in-2025",
+    "description": "This market will resolve to \"Yes\" if Emmanuel Macron ceases to be President of France for any length of time between January 2 and December 31, 2025, 11:59 PM ET (inclusive). Otherwise, this market will resolve to \"No\".\n\nIf Macron departs from office before the expiry date, the market should resolve immediately.\n\nThe primary resolution source for this market will be information from the government of France, however a consensus of credible reporting will also be used.",
+    "active": true,
+    "closed": false,
+    "liquidity": 29417.79418,
+    "volume": 1827788.854516,
+    "markets": [
+      {
+        "question": "Macron out in 2025?",
+        "condition_id": "0x6301809524e73edb9ab1bd180101ae6d9588ba78075a64c479f334a6d2a12975",
+        "question_id": "",
+        "slug": "macron-out-in-2025-834",
+        "active": true,
+        "closed": true,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.0,
+          1.0
+        ],
+        "tokens": [],
+        "volume": 1386219.767204,
+        "volume24hr": null,
+        "liquidity": null,
+        "end_date": "2025-12-31T12:00:00Z",
+        "description": "This market will resolve to \"Yes\" if Emmanuel Macron ceases to be President of France for any length of time between January 2 and December 31, 2025, 11:59 PM ET (inclusive). Otherwise, this market will resolve to \"No\".\n\nIf Macron departs from office before the expiry date, the market should resolve immediately.\n\nThe primary resolution source for this market will be information from the government of France, however a consensus of credible reporting will also be used."
+      },
+      {
+        "question": "Macron out by June 30, 2026?",
+        "condition_id": "0xda5c517dd5b78c80dec8ceb08ca4f466317633487827d7290332b4851cc4a4fa",
+        "question_id": "",
+        "slug": "macron-out-by-june-30-2026-273",
+        "active": true,
+        "closed": false,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.0395,
+          0.9605
+        ],
+        "tokens": [],
+        "volume": 235944.57989,
+        "volume24hr": 2143.546735,
+        "liquidity": 29417.79418,
+        "end_date": "2026-06-30T12:00:00Z",
+        "description": "This market will resolve to \"Yes\" if Emmanuel Macron ceases to be President of France for any length of time between September 14, 2025, and June 30, 2026, 11:59 PM ET (inclusive). Otherwise, this market will resolve to \"No\".\n\nIf Macron departs from office before the expiry date, the market should resolve immediately.\n\nThe primary resolution source for this market will be information from the government of France, however a consensus of credible reporting will also be used."
+      },
+      {
+        "question": "Macron out by October 31, 2025?",
+        "condition_id": "0xdc7ff8e7d1bf22e6b9f372b3122bf553ed7bfedebc500e76e61aab35d9ebdb8e",
+        "question_id": "",
+        "slug": "macron-out-by-october-31-2025",
+        "active": true,
+        "closed": true,
+        "outcomes": [
+          "Yes",
+          "No"
+        ],
+        "outcome_prices": [
+          0.0,
+          1.0
+        ],
+        "tokens": [],
+        "volume": 205624.507422,
+        "volume24hr": null,
+        "liquidity": null,
+        "end_date": "2025-10-31T12:00:00Z",
+        "description": "This market will resolve to \"Yes\" if Emmanuel Macron ceases to be President of France for any length of time between October 6, and October 31, 2025, 11:59 PM ET (inclusive). Otherwise, this market will resolve to \"No\".\n\nIf Macron departs from office before the expiry date, the market should resolve immediately.\n\nThe primary resolution source for this market will be information from the government of France, however a consensus of credible reporting will also be used."
+      }
+    ],
+    "created_at": "2025-01-03T19:28:39.855536Z",
+    "end_date": "2026-06-30T12:00:00Z"
+  }
+]

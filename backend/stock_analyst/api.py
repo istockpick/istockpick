@@ -522,6 +522,87 @@ def create_app() -> FastAPI:
         trades = compute_trade_roi(trades)
         return seasonal_summary(trades, year=effective_year)
 
+    @app.get("/api/v1/polymarket/markets")
+    def get_polymarket_markets(
+        q: str = Query(..., description="Search keyword or ticker symbol"),
+        limit: int = Query(default=10, ge=1, le=50, description="Max results"),
+    ) -> dict:
+        from .polymarket import search_markets
+
+        results = search_markets(query=q, limit=limit)
+        return {
+            "markets": results,
+            "total": len(results),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/api/v1/polymarket/opportunities")
+    def get_polymarket_opportunities(
+        symbol: str = Query(..., description="Ticker symbol (e.g. AAPL, BTC-USD)"),
+        asset_type: str = Query(default="stock", description="Asset type: stock, crypto, option, or future"),
+        limit: int = Query(default=5, ge=1, le=20, description="Max opportunities"),
+    ) -> dict:
+        from .polymarket import find_opportunities
+
+        # Run iStockPick analysis to get signal + confidence
+        resolved = _resolve_symbol(symbol, asset_type=asset_type)
+        if not resolved:
+            raise HTTPException(status_code=400, detail=f"Could not resolve symbol: {symbol}")
+
+        try:
+            analysis = generate_full_analysis(resolved, asset_type=asset_type)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to generate analysis for {resolved}",
+            ) from exc
+
+        ai_reco = analysis.get("ai_recommendation") or {}
+        signal = ai_reco.get("action", "HOLD")
+        confidence = float(ai_reco.get("confidence", 50))
+
+        opportunities = find_opportunities(
+            symbol=resolved,
+            signal=signal,
+            confidence=confidence,
+            limit=limit,
+        )
+
+        return {
+            "symbol": resolved,
+            "signal": signal,
+            "confidence": confidence,
+            "opportunities": opportunities,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/api/v1/polymarket/market/{condition_id}")
+    def get_polymarket_market_detail(condition_id: str) -> dict:
+        from .polymarket import get_market_detail, get_market_price
+
+        market = get_market_detail(condition_id)
+        if not market:
+            raise HTTPException(status_code=404, detail=f"Market not found: {condition_id}")
+
+        # Fetch live price if we have a token_id
+        order_book = {}
+        token_id = ""
+        tokens = market.get("tokens") or []
+        if tokens:
+            token_id = tokens[0] if isinstance(tokens[0], str) else ""
+        if token_id:
+            price_data = get_market_price(token_id)
+            order_book = price_data.get("order_book", {})
+            market["live_midpoint"] = price_data.get("midpoint")
+            market["best_bid"] = price_data.get("best_bid")
+            market["best_ask"] = price_data.get("best_ask")
+
+        return {
+            "market": market,
+            "order_book": order_book,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     @app.get("/api/v1/options/chain")
     def get_options_chain_endpoint(
         symbol: str = Query(..., description="Underlying stock symbol"),
