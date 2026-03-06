@@ -107,11 +107,13 @@ for p in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
 try:
     from stock_analyst.web_analyzer import generate_full_analysis, generate_scoring_data
     from stock_analyst.market_data import search_symbol as resolve_symbol_via_openbb
+    from stock_analyst.modeling import generate_modeling_payload
     ANALYSIS_IMPORT_ERROR = None
 except Exception as exc:
     generate_full_analysis = None
     generate_scoring_data = None
     resolve_symbol_via_openbb = None
+    generate_modeling_payload = None
     ANALYSIS_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
     for root in (STOCK_ANALYST_PATH, LEGACY_STOCK_ANALYST_PATH):
         module_path = os.path.join(root, "stock_analyst", "web_analyzer.py")
@@ -320,6 +322,10 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
             lookup_value = query.get('q', [''])[0]
             asset_type = query.get('asset_type', ['stock'])[0]
             self.serve_stock_analysis(lookup_value, asset_type=asset_type)
+        elif parsed_path.path == '/modeling':
+            lookup_value = query.get('q', [''])[0]
+            asset_type = query.get('asset_type', ['stock'])[0]
+            self.serve_stock_modeling(lookup_value, asset_type=asset_type)
         elif parsed_path.path == '/api/v1/congress/trades':
             self.serve_api_congress_trades(query)
         elif parsed_path.path == '/api/v1/congress/roi':
@@ -2478,6 +2484,37 @@ class ConstructionHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as exc:
             self.log_error("analyze failed for %s: %s", query, exc)
             self.send_json(502, {"error": "Unable to generate analysis right now. Please try again."})
+
+    def serve_stock_modeling(self, raw_query, asset_type="stock"):
+        query = (raw_query or '').strip().upper()
+        at = (asset_type or "stock").lower()
+        if not query:
+            self.send_json(400, {"error": "Please provide a symbol to model."})
+            return
+        if len(query) > 20 or not _looks_like_multi_asset_ticker(query):
+            self.send_json(400, {"error": "Please provide a valid ticker symbol (e.g., AAPL, BTC-USD, ES=F)."})
+            return
+
+        try:
+            if at in ("crypto", "future") or _detect_asset_type(query) != "stock":
+                public_stock = self.lookup_public_stock(query, asset_type=at)
+            else:
+                public_stock = self.lookup_ticker(query)
+                if not public_stock:
+                    self.send_json(404, {"error": f"'{query}' is not recognized as a public stock."})
+                    return
+
+            if generate_modeling_payload is None:
+                self.send_json(503, {"error": "Modeling endpoint is unavailable on this runtime."})
+                return
+
+            modeling = generate_modeling_payload(query, asset_type=at)
+            if public_stock:
+                modeling["company"] = public_stock.get("name", modeling.get("company", query))
+            self.send_json(200, modeling)
+        except Exception as exc:
+            self.log_error("modeling failed for %s: %s", query, exc)
+            self.send_json(502, {"error": "Unable to generate modeling data right now. Please try again."})
 
     def generate_full_analysis_subprocess(self, symbol):
         script = (

@@ -105,6 +105,11 @@
             align-items: center;
         }
 
+        .lookup-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
         .lookup-input {
             flex: 1;
             min-width: 180px;
@@ -135,6 +140,11 @@
             font-weight: 600;
             background: #00d4ff;
             color: #1f2a44;
+        }
+
+        .lookup-button-secondary {
+            background: #d9f27c;
+            color: #18230f;
         }
 
         .lookup-result {
@@ -540,7 +550,10 @@
                     <option value="option">Options</option>
                     <option value="future">Futures</option>
                 </select>
-                <button class="lookup-button" type="submit">Check</button>
+                <div class="lookup-actions">
+                    <button class="lookup-button" type="submit" data-action="check">Check</button>
+                    <button class="lookup-button lookup-button-secondary" type="submit" data-action="model">Model</button>
+                </div>
             </form>
             <div class="lookup-result" id="lookupResult"></div>
             <div class="analysis-card" id="analysisCard">
@@ -800,11 +813,40 @@
             }
         }
 
+        const renderModeling = (symbol, modeling) => {
+            const features = modeling.latest_features || {};
+            const previewRows = Array.isArray(modeling.preview_rows) ? modeling.preview_rows : [];
+            const labelPreview = modeling.label_preview || {};
+            analysisTitle.textContent = `Model for ${symbol}`;
+            analysisGrid.innerHTML = `
+                <div class="analysis-item action-item"><strong>Pipeline</strong><br>OpenBB -> ${escapeHtml(modeling.feature_engine || 'qlib')}</div>
+                <div class="analysis-item"><strong>Dataset</strong><br>${escapeHtml(String(modeling.history_rows || 0))} rows from ${escapeHtml(modeling.period || '1y')}</div>
+                <div class="analysis-item"><strong>Latest Factors</strong><br>RSI 14: ${Number(features.rsi_14 || 0).toFixed(2)}<br>MA20/50/200: ${Number(features.ma_20 || 0).toFixed(2)} / ${Number(features.ma_50 || 0).toFixed(2)} / ${Number(features.ma_200 || 0).toFixed(2)}</div>
+                <div class="analysis-item"><strong>Momentum</strong><br>MACD: ${Number(features.macd || 0).toFixed(3)}<br>Signal: ${Number(features.macd_signal || 0).toFixed(3)}<br>Histogram: ${Number(features.macd_histogram || 0).toFixed(3)}</div>
+                <div class="analysis-item"><strong>Risk</strong><br>ATR20: ${Number(features.atr_20 || 0).toFixed(3)}<br>Hist Vol20: ${(Number(features.historical_volatility_20 || 0) * 100).toFixed(2)}%</div>
+                <div class="analysis-item"><strong>Label Preview</strong><br>${escapeHtml(labelPreview.definition || 'N/A')}<br>Value: ${labelPreview.value === null || labelPreview.value === undefined ? 'N/A' : `${Number(labelPreview.value).toFixed(2)}%`}</div>
+            `;
+            if (previewRows.length) {
+                const rowsText = previewRows.map((row) => {
+                    const day = String(row.date || '').slice(0, 10);
+                    return `${day}: ${Number(row.close || 0).toFixed(2)}`;
+                }).join('<br>');
+                analysisGrid.innerHTML += `<div class="analysis-item"><strong>Recent OHLCV Rows</strong><br>${rowsText}</div>`;
+            }
+            optionsChainCard.style.display = 'none';
+            const generatedAt = modeling.generated_at ? new Date(modeling.generated_at) : null;
+            analysisMeta.textContent = generatedAt && !isNaN(generatedAt)
+                ? `Model data source: ${escapeHtml(modeling.data_source || 'openbb')} • Last updated: ${generatedAt.toLocaleString()}`
+                : `Model data source: ${escapeHtml(modeling.data_source || 'openbb')}`;
+            analysisCard.style.display = 'block';
+        };
+
         lookupForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const q = lookupInput.value.trim();
             if (!q) return;
             const at = assetTypeSelect.value;
+            const action = e.submitter && e.submitter.dataset ? e.submitter.dataset.action : 'check';
 
             analysisCard.style.display = 'none';
             analysisGrid.innerHTML = '';
@@ -827,17 +869,29 @@
                 lookupResult.style.color = '#d7ffd7';
                 lookupResult.textContent = `\u2705 ${data.input} \u2192 ${data.symbol} (${data.name})${typeLabel}`;
 
-                analysisTitle.textContent = `AI analysis for ${data.symbol}`;
-                analysisGrid.innerHTML = '<div class="analysis-item"><span class="spinner"></span>Running analysis...</div>';
-                analysisMeta.textContent = 'Generating analysis...';
+                if (action === 'model') {
+                    analysisTitle.textContent = `Model for ${data.symbol}`;
+                    analysisGrid.innerHTML = '<div class="analysis-item"><span class="spinner"></span>Fetching OpenBB data and generating Qlib features...</div>';
+                    analysisMeta.textContent = 'Generating model dataset...';
+                } else {
+                    analysisTitle.textContent = `AI analysis for ${data.symbol}`;
+                    analysisGrid.innerHTML = '<div class="analysis-item"><span class="spinner"></span>Running analysis...</div>';
+                    analysisMeta.textContent = 'Generating analysis...';
+                }
                 analysisCard.style.display = 'block';
 
-                const analysisRes = await fetch(`/analyze?q=${encodeURIComponent(data.symbol)}&asset_type=${encodeURIComponent(at)}`);
+                const endpoint = action === 'model' ? '/modeling' : '/analyze';
+                const analysisRes = await fetch(`${endpoint}?q=${encodeURIComponent(data.symbol)}&asset_type=${encodeURIComponent(at)}`);
                 const analysis = await analysisRes.json();
 
                 if (!analysisRes.ok) {
                     analysisGrid.innerHTML = `<div class="analysis-item">${escapeHtml(analysis.error || 'Analysis failed.')}</div>`;
                     analysisMeta.textContent = '';
+                    return;
+                }
+
+                if (action === 'model') {
+                    renderModeling(data.symbol, analysis);
                     return;
                 }
 
